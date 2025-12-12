@@ -1,0 +1,214 @@
+"""Tests for training loop functionality."""
+
+import shutil
+import tempfile
+from pathlib import Path
+
+import pytest
+import torch
+from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.tensorboard import SummaryWriter
+
+from lora_trainer.config import TrainingConfig
+from lora_trainer.logging import create_run_dirs
+from lora_trainer.model import DummyUNet, select_lora_params
+from lora_trainer.train_loop import save_checkpoint, train
+
+
+@pytest.fixture
+def temp_workspace():
+    """Create a temporary workspace directory."""
+    temp_dir = Path(tempfile.mkdtemp())
+    yield temp_dir
+    shutil.rmtree(temp_dir)
+
+
+@pytest.fixture
+def temp_data_dir():
+    """Create a temporary directory with dummy image files."""
+    temp_dir = Path(tempfile.mkdtemp())
+    for i in range(10):
+        (temp_dir / f"image_{i}.jpg").touch()
+    yield temp_dir
+    shutil.rmtree(temp_dir)
+
+
+@pytest.fixture
+def dummy_dataloader():
+    """Create a simple in-memory dataloader for testing."""
+    # Create fake data: [batch_size, channels, height, width]
+    pixel_values = torch.randn(20, 3, 64, 64)
+    captions = ["dummy caption"] * 20
+
+    # Create a simple dataset
+    dataset = TensorDataset(pixel_values)
+
+    # Wrap in a dataloader
+    def collate_fn(batch):
+        return {"pixel_values": batch[0][0].unsqueeze(0), "caption": captions[0]}
+
+    dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
+    return dataloader
+
+
+def test_train_completes_requested_steps(temp_workspace, temp_data_dir):
+    """Test that training runs for the requested number of steps."""
+    # Create minimal config
+    config = TrainingConfig(
+        checkpoint="dummy.safetensors",
+        train_data=temp_data_dir,
+        steps=5,
+        batch_size=2,
+        workspace=temp_workspace,
+        grad_accum=1,
+    )
+
+    # Setup
+    dirs = create_run_dirs(config.workspace)
+    writer = SummaryWriter(log_dir=str(dirs["tb"]))
+    model = DummyUNet()
+    optimizer = torch.optim.AdamW(select_lora_params(model), lr=1e-4)
+
+    # Create simple dataloader
+    pixel_values = torch.randn(20, 3, 64, 64)
+    dataset = TensorDataset(pixel_values)
+
+    def collate_fn(batch):
+        # batch is a list of tuples [(tensor,), (tensor,), ...]
+        stacked = torch.stack([item[0] for item in batch])
+        return {"pixel_values": stacked, "caption": ["dummy"] * len(batch)}
+
+    dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn, drop_last=True)
+
+    # Run training
+    train(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        config=config,
+        dirs=dirs,
+        writer=writer,
+        device="cpu",
+    )
+
+    # Check that final checkpoint exists
+    final_checkpoint = dirs["checkpoints"] / "final.pt"
+    assert final_checkpoint.exists()
+
+    writer.close()
+
+
+def test_save_checkpoint_creates_file(temp_workspace):
+    """Test that save_checkpoint creates a checkpoint file."""
+    model = DummyUNet()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+    checkpoint_dir = temp_workspace / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+
+    save_checkpoint(
+        model=model,
+        optimizer=optimizer,
+        global_step=100,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+    checkpoint_path = checkpoint_dir / "step_000100.pt"
+    assert checkpoint_path.exists()
+
+
+def test_save_checkpoint_final(temp_workspace):
+    """Test that final checkpoint has correct name."""
+    model = DummyUNet()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+    checkpoint_dir = temp_workspace / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+
+    save_checkpoint(
+        model=model,
+        optimizer=optimizer,
+        global_step=1000,
+        checkpoint_dir=checkpoint_dir,
+        is_final=True,
+    )
+
+    final_path = checkpoint_dir / "final.pt"
+    assert final_path.exists()
+
+
+def test_checkpoint_contains_required_keys(temp_workspace):
+    """Test that checkpoint contains model and optimizer state."""
+    model = DummyUNet()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
+    checkpoint_dir = temp_workspace / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+
+    save_checkpoint(
+        model=model,
+        optimizer=optimizer,
+        global_step=50,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+    checkpoint_path = checkpoint_dir / "step_000050.pt"
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    assert "model_state_dict" in checkpoint
+    assert "optimizer_state_dict" in checkpoint
+    assert "global_step" in checkpoint
+    assert checkpoint["global_step"] == 50
+
+
+def test_model_parameters_update_during_training(temp_workspace, temp_data_dir):
+    """Test that model parameters actually change during training."""
+    config = TrainingConfig(
+        checkpoint="dummy.safetensors",
+        train_data=temp_data_dir,
+        steps=3,
+        batch_size=2,
+        workspace=temp_workspace,
+    )
+
+    dirs = create_run_dirs(config.workspace)
+    writer = SummaryWriter(log_dir=str(dirs["tb"]))
+    model = DummyUNet()
+
+    # Save initial parameters
+    initial_params = {name: param.clone() for name, param in model.named_parameters()}
+
+    optimizer = torch.optim.AdamW(select_lora_params(model), lr=1e-3)
+
+    # Create dataloader
+    pixel_values = torch.randn(20, 3, 64, 64)
+    dataset = TensorDataset(pixel_values)
+
+    def collate_fn(batch):
+        # batch is a list of tuples [(tensor,), (tensor,), ...]
+        stacked = torch.stack([item[0] for item in batch])
+        return {"pixel_values": stacked, "caption": ["dummy"] * len(batch)}
+
+    dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn, drop_last=True)
+
+    # Run training
+    train(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        config=config,
+        dirs=dirs,
+        writer=writer,
+        device="cpu",
+    )
+
+    # Check that at least some parameters changed
+    params_changed = False
+    for name, param in model.named_parameters():
+        if not torch.allclose(param, initial_params[name]):
+            params_changed = True
+            break
+
+    assert params_changed, "Model parameters should change during training"
+
+    writer.close()

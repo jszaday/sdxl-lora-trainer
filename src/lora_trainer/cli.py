@@ -10,7 +10,6 @@ import torch.optim as optim
 from .config import TrainingConfig
 from .data import build_dataloader
 from .logging import create_run_dirs, init_tensorboard, log_hparams
-from .model import load_model, select_lora_params
 from .train_loop import train
 from .utils import set_seed
 
@@ -234,12 +233,39 @@ def main() -> None:
     print(f"Dataset size: {len(dataloader.dataset)} images")
     print(f"Batches per epoch: {len(dataloader)}")
 
-    # Load model
+    # Determine dtype based on mixed precision setting
+    if config.mixed_precision == "fp16":
+        dtype = torch.float16
+    elif config.mixed_precision == "bf16":
+        dtype = torch.bfloat16
+    else:
+        dtype = torch.float32
+
+    # Load model components
     print(f"\nLoading model from: {config.checkpoint}")
-    model = load_model(config.checkpoint, device=device)
+
+    # Import model loading functions
+    from .model import load_sdxl_unet, load_text_encoders, load_vae, select_lora_params
+
+    model = load_sdxl_unet(
+        config.checkpoint,
+        device=device,
+        dtype=dtype,
+        lora_rank=config.lora_rank,
+        lora_alpha=config.lora_alpha,
+    )
+
+    print("\nLoading VAE...")
+    vae = load_vae(config.checkpoint, device=device, dtype=dtype)
+
+    print("Loading text encoders...")
+    text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
+        config.checkpoint, device=device, dtype=dtype
+    )
+
     trainable_params = list(select_lora_params(model))
     num_params = sum(p.numel() for p in trainable_params)
-    print(f"Trainable parameters: {num_params:,}")
+    print(f"Trainable LoRA parameters: {num_params:,}")
 
     # Create optimizer
     optimizer = optim.AdamW(trainable_params, lr=config.learning_rate)
@@ -254,6 +280,11 @@ def main() -> None:
         dirs=dirs,
         writer=writer,
         device=device,
+        vae=vae,
+        text_encoder_1=text_encoder_1,
+        text_encoder_2=text_encoder_2,
+        tokenizer_1=tokenizer_1,
+        tokenizer_2=tokenizer_2,
     )
 
     # Cleanup

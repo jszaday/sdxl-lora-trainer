@@ -6,13 +6,39 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.tensorboard import SummaryWriter
 
 from lora_trainer.config import TrainingConfig
 from lora_trainer.logging import create_run_dirs
-from lora_trainer.model import DummyUNet, select_lora_params
+from lora_trainer.model import LoRALayer
 from lora_trainer.train_loop import save_checkpoint, train
+
+
+class DummyUNet(nn.Module):
+    """Minimal UNet for testing that returns diffusers-compatible output."""
+
+    def __init__(self, in_channels=4, out_channels=4):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+
+    def forward(self, sample, timestep, encoder_hidden_states, **kwargs):
+        # Return a simple output with .sample attribute like diffusers
+        output = self.conv(sample)
+        return type("Output", (), {"sample": output})()
+
+
+def select_lora_params_dummy(model):
+    """Select params for dummy model (all params since no LoRA yet)."""
+    # For dummy model without LoRA, return all params
+    for module in model.modules():
+        if isinstance(module, LoRALayer):
+            yield from module.lora_down.parameters()
+            yield from module.lora_up.parameters()
+    # If no LoRA layers, return all parameters
+    if not any(isinstance(m, LoRALayer) for m in model.modules()):
+        yield from model.parameters()
 
 
 @pytest.fixture
@@ -61,16 +87,17 @@ def test_train_completes_requested_steps(temp_workspace, temp_data_dir):
         batch_size=2,
         workspace=temp_workspace,
         grad_accum=1,
+        image_size=512,  # Match our 64x64 latent data (64 * 8 = 512)
     )
 
     # Setup
     dirs = create_run_dirs(config.workspace)
     writer = SummaryWriter(log_dir=str(dirs["tb"]))
     model = DummyUNet()
-    optimizer = torch.optim.AdamW(select_lora_params(model), lr=1e-4)
+    optimizer = torch.optim.AdamW(select_lora_params_dummy(model), lr=1e-4)
 
-    # Create simple dataloader
-    pixel_values = torch.randn(20, 3, 64, 64)
+    # Create simple dataloader (use 4 channels like latent space)
+    pixel_values = torch.randn(20, 4, 64, 64)
     dataset = TensorDataset(pixel_values)
 
     def collate_fn(batch):
@@ -169,6 +196,7 @@ def test_model_parameters_update_during_training(temp_workspace, temp_data_dir):
         steps=3,
         batch_size=2,
         workspace=temp_workspace,
+        image_size=512,  # Match our 64x64 latent data (64 * 8 = 512)
     )
 
     dirs = create_run_dirs(config.workspace)
@@ -178,10 +206,10 @@ def test_model_parameters_update_during_training(temp_workspace, temp_data_dir):
     # Save initial parameters
     initial_params = {name: param.clone() for name, param in model.named_parameters()}
 
-    optimizer = torch.optim.AdamW(select_lora_params(model), lr=1e-3)
+    optimizer = torch.optim.AdamW(select_lora_params_dummy(model), lr=1e-3)
 
-    # Create dataloader
-    pixel_values = torch.randn(20, 3, 64, 64)
+    # Create dataloader (use 4 channels like latent space)
+    pixel_values = torch.randn(20, 4, 64, 64)
     dataset = TensorDataset(pixel_values)
 
     def collate_fn(batch):

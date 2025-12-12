@@ -118,6 +118,7 @@ JSONL is also supported (one JSON object per line). Each entry may include:
 - `--sample_prompts`: Path to prompts file
 - `--sample_every`: Generate samples every N steps (default: 500)
 - `--samples_per_prompt`: Number of samples per prompt (default: 1)
+- `--sample_clip_skip`: Clip skip for text_encoder_1 hidden states (1 = penultimate; default: 1)
 
 **LoRA:**
 - `--lora_rank`: Rank of LoRA matrices (default: 16)
@@ -146,6 +147,18 @@ python -m lora_trainer.sampler_cli \
 - Supports the same prompt JSON/JSONL format as training.
 - Optional: `--lora_checkpoint` to load LoRA weights from a training checkpoint before sampling.
 - Outputs samples to `{workspace}/samples/` and logs images to `{workspace}/tb/`.
+
+### LoRA Checkpoint Conversion
+
+Convert a training `.pt` checkpoint (or LoRA-only `.pt`) into ComfyUI-ready safetensors with Comfy's `lora_unet_*` naming:
+
+```bash
+python -m lora_converter.cli /path/to/step_000500.pt --output final_lora.safetensors
+# or, if installed as a console script:
+lora-convert /path/to/step_000500.pt
+```
+
+The converter extracts only LoRA tensors, rewrites the keys to ComfyUI's expected format, and avoids duplicate aliases.
 
 ## Monitoring Training
 

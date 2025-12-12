@@ -54,15 +54,16 @@ def load_prompt_specs(path: Path, samples_per_prompt: int) -> list[PromptSpec]:
     if not path.exists():
         raise FileNotFoundError(f"Prompt file not found: {path}")
 
+    content = path.read_text()
     if path.suffix.lower() == ".jsonl":
         entries = []
-        for line in path.read_text().splitlines():
+        for line in content.splitlines():
             line = line.strip()
             if not line:
                 continue
             entries.append(json.loads(line))
     else:
-        data = json.loads(path.read_text())
+        data = json.loads(content)
         if isinstance(data, list):
             entries = data
         else:
@@ -83,6 +84,7 @@ def encode_prompts_for_sampling(
     tokenizer_1,
     tokenizer_2,
     device: str,
+    clip_skip: int = 1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Encode text prompts using SDXL's dual text encoders for sampling.
 
@@ -119,11 +121,14 @@ def encode_prompts_for_sampling(
         encoder_output_1 = text_encoder_1(tokens_1, output_hidden_states=True)
         encoder_output_2 = text_encoder_2(tokens_2, output_hidden_states=True)
 
+    # SDXL uses penultimate hidden states by default; clip_skip lets us step back further.
+    idx = -(clip_skip + 1)
+
     # SDXL uses penultimate hidden states from encoder 1 and encoder 2
     prompt_embeds = torch.cat(
         [
-            encoder_output_1.hidden_states[-2],
-            encoder_output_2.hidden_states[-2],
+            encoder_output_1.hidden_states[idx],
+            encoder_output_2.hidden_states[idx],
         ],
         dim=-1,
     )
@@ -148,6 +153,8 @@ def sample_with_cfg(
     device: str,
     dtype: torch.dtype,
     seeds: list[int | None] | None = None,
+    sampler_name: str = "ddim",
+    denoise: float = 1.0,
 ) -> torch.Tensor:
     """Run diffusion sampling with classifier-free guidance.
 
@@ -168,7 +175,7 @@ def sample_with_cfg(
     Returns:
         Denoised latents tensor
     """
-    # Set timesteps
+    # Set timesteps/sigmas
     scheduler.set_timesteps(num_inference_steps, device=device)
 
     # Prepare latents (random noise)
@@ -214,7 +221,12 @@ def sample_with_cfg(
     }
 
     # Denoising loop
-    for t in tqdm(scheduler.timesteps, desc="Sampling", leave=False):
+    timesteps = scheduler.timesteps
+    if denoise < 1.0:
+        cut = max(1, int(len(timesteps) * denoise))
+        timesteps = timesteps[:cut]
+
+    for t in tqdm(timesteps, desc="Sampling", leave=False):
         # Expand latents for CFG
         latent_model_input = torch.cat([latents] * 2)
         latent_model_input = scheduler.scale_model_input(latent_model_input, t)
@@ -310,7 +322,9 @@ def run_validation_samples(
     print(f"\nGenerating {len(prompts)} validation samples...")
 
     # Build scheduler
-    scheduler = build_noise_scheduler(config.scheduler, config.sampler_steps)
+    scheduler = build_noise_scheduler(
+        config.scheduler, config.sampler_steps, sampler_name=config.sampler
+    )
 
     # Encode prompts
     prompt_embeds, pooled_prompt_embeds = encode_prompts_for_sampling(
@@ -320,6 +334,7 @@ def run_validation_samples(
         tokenizer_1,
         tokenizer_2,
         device,
+        clip_skip=config.sample_clip_skip,
     )
 
     # Encode negative prompts (empty string)
@@ -330,6 +345,7 @@ def run_validation_samples(
         tokenizer_1,
         tokenizer_2,
         device,
+        clip_skip=config.sample_clip_skip,
     )
 
     # Set model to eval mode
@@ -354,6 +370,7 @@ def run_validation_samples(
         device=device,
         dtype=dtype,
         seeds=seeds,
+        sampler_name=config.sampler,
     )
 
     # Decode to images

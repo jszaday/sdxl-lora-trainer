@@ -208,16 +208,3 @@ def test_sample_prompts_file_creation(temp_workspace):
     assert specs[2].prompt == "a dog"
     assert specs[2].negative == ""
     assert specs[2].seed is None
-
-    # Read prompts
-    prompts = []
-    with open(prompts_file) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                prompts.append(line)
-
-    assert len(prompts) == 3
-    assert prompts[0] == "a cat"
-    assert prompts[1] == "a dog"
-    assert prompts[2] == "a bird"

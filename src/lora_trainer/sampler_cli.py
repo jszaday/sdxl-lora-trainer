@@ -79,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         default=1024,
         help="Image size for sampling (default: 1024)",
     )
+    sampling.add_argument(
+        "--sample_clip_skip",
+        type=int,
+        default=1,
+        help="Clip skip for text_encoder_1 hidden states (1 = penultimate)",
+    )
 
     lora_group = parser.add_argument_group("LoRA arguments")
     lora_group.add_argument(
@@ -165,12 +171,29 @@ def main() -> None:
             if isinstance(state, dict) and "model_state_dict" in state:
                 state = state["model_state_dict"]
             lora_state = {k: v for k, v in state.items() if "lora_" in k}
+            if not lora_state:
+                # Try diffusers-style keys
+                for k, v in state.items():
+                    if not k.startswith("lora_unet_") or ".lora_" not in k:
+                        continue
+                    module_us, suffix = k.replace("lora_unet_", "").split(".lora_", 1)
+                    module = module_us.replace("_", ".")
+                    restored_key = f"{module}.lora_{suffix}"
+                    lora_state[restored_key] = v
         except Exception:
             try:
                 from safetensors.torch import load_file
 
                 state = load_file(str(args.lora_checkpoint))
                 lora_state = {k: v for k, v in state.items() if "lora_" in k}
+                if not lora_state:
+                    for k, v in state.items():
+                        if not k.startswith("lora_unet_") or ".lora_" not in k:
+                            continue
+                        module_us, suffix = k.replace("lora_unet_", "").split(".lora_", 1)
+                        module = module_us.replace("_", ".")
+                        restored_key = f"{module}.lora_{suffix}"
+                        lora_state[restored_key] = v
             except Exception as e:
                 print(f"Error loading LoRA checkpoint for detection: {e}")
                 sys.exit(1)
@@ -226,6 +249,7 @@ def main() -> None:
         sample_prompts=args.sample_prompts,
         samples_per_prompt=args.samples_per_prompt,
         image_size=args.image_size,
+        sample_clip_skip=args.sample_clip_skip,
     )
 
     print("\nGenerating samples...")

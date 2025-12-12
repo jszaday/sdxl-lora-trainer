@@ -3,6 +3,7 @@
 import ast
 
 import torch
+from torch.optim import Optimizer
 
 
 def parse_optimizer_spec(spec: str) -> tuple[str, dict]:
@@ -46,9 +47,42 @@ def build_optimizer(params, spec: str, base_lr: float) -> torch.optim.Optimizer:
 
     if name == "prodigy":
         try:
-            from prodigyopt import Prodigy
+            import prodigyopt  # noqa: F401
         except Exception as e:
             raise ImportError("Install prodigyopt to use prodigy optimizer") from e
-        return Prodigy(params, **kwargs)
+        return ProdigyWithTracking(params, **kwargs)
 
     raise ValueError(f"Unknown optimizer '{name}'. Supported: adamw, lion, prodigy")
+
+
+class ProdigyWithTracking(Optimizer):
+    """Prodigy wrapper that records effective step size per step."""
+
+    def __init__(self, params, *args, **kwargs):
+        from prodigyopt import Prodigy
+
+        # Track last effective lr
+        self.last_step_size: float | None = None
+
+        # Instantiate inner optimizer
+        self.inner = Prodigy(params, *args, **kwargs)
+
+    @property
+    def param_groups(self):
+        return self.inner.param_groups
+
+    def state_dict(self):
+        return self.inner.state_dict()
+
+    def load_state_dict(self, state_dict):
+        return self.inner.load_state_dict(state_dict)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        # Prodigy exposes step size via return value
+        step_size = self.inner.step(closure)
+        self.last_step_size = step_size
+        return step_size
+
+    def zero_grad(self, set_to_none: bool = False):
+        return self.inner.zero_grad(set_to_none=set_to_none)

@@ -8,10 +8,18 @@ TODO: Expand to match full ComfyUI scheduler/sampler set:
 For now, we support the most common ones that match ComfyUI's names.
 """
 
-from diffusers import DDIMScheduler, DDPMScheduler, EulerDiscreteScheduler
+from diffusers import (
+    DDIMScheduler,
+    DDPMScheduler,
+    EulerAncestralDiscreteScheduler,
+    EulerDiscreteScheduler,
+    HeunDiscreteScheduler,
+)
 
 
-def build_noise_scheduler(name: str, num_inference_steps: int = 50) -> object:
+def build_noise_scheduler(
+    name: str, num_inference_steps: int = 50, sampler_name: str | None = None
+) -> object:
     """Build a diffusers noise scheduler from a user-facing name.
 
     Args:
@@ -38,7 +46,11 @@ def build_noise_scheduler(name: str, num_inference_steps: int = 50) -> object:
         return DDPMScheduler(**scheduler_config)
 
     elif name == "normal":
-        # Normal scheduler without special noise scaling (DDIM-like)
+        # Normal scheduler; default to DDIM, but allow per-sampler tweaks
+        if sampler_name == "heun":
+            return HeunDiscreteScheduler(**scheduler_config, timestep_spacing="linspace")
+        if sampler_name in ("euler", "euler_ancestral"):
+            return EulerDiscreteScheduler(**scheduler_config, timestep_spacing="linspace")
         return DDIMScheduler(
             **scheduler_config,
             clip_sample=False,
@@ -48,6 +60,11 @@ def build_noise_scheduler(name: str, num_inference_steps: int = 50) -> object:
     elif name == "karras":
         # Karras noise schedule (uses special timestep spacing)
         # Use Euler scheduler with timestep_spacing="trailing" for Karras-like behavior
+        if sampler_name == "euler_ancestral":
+            return EulerAncestralDiscreteScheduler(
+                **scheduler_config,
+                timestep_spacing="trailing",
+            )
         return EulerDiscreteScheduler(
             **scheduler_config,
             timestep_spacing="trailing",

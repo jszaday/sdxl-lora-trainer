@@ -147,6 +147,12 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Number of samples to generate per prompt (default: 1)",
     )
+    sampling_group.add_argument(
+        "--sample_clip_skip",
+        type=int,
+        default=1,
+        help="Clip skip for text_encoder_1 hidden states (1 = penultimate, like current)",
+    )
 
     # LoRA arguments
     lora_group = parser.add_argument_group("LoRA arguments")
@@ -219,6 +225,7 @@ def main() -> None:
             sample_prompts=args.sample_prompts,
             sample_every=args.sample_every,
             samples_per_prompt=args.samples_per_prompt,
+            sample_clip_skip=args.sample_clip_skip,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,
             seed=args.seed,

@@ -9,6 +9,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from lora_converter.converter import convert_lora_state
+
 from .sampling import run_validation_samples
 
 
@@ -103,6 +105,10 @@ def train(
     """
     model.train()
     model = model.to(device)
+    try:
+        model_dtype = next(model.parameters()).dtype
+    except StopIteration:
+        model_dtype = torch.float32
 
     # Set up noise scheduler for diffusion training
     noise_scheduler = DDPMScheduler(
@@ -226,10 +232,10 @@ def train(
                 # Simple MSE loss on model output
                 dummy_target = torch.zeros(
                     config.batch_size, 4, config.image_size // 8, config.image_size // 8
-                ).to(device=device, dtype=model.dtype)
+                ).to(device=device, dtype=model_dtype)
                 dummy_timesteps = torch.zeros(config.batch_size, device=device).long()
                 dummy_embeds = torch.zeros(
-                    config.batch_size, 77, 2048, device=device, dtype=model.dtype
+                    config.batch_size, 77, 2048, device=device, dtype=model_dtype
                 )
                 output = model(pixel_values, dummy_timesteps, dummy_embeds).sample
                 loss = torch.nn.functional.mse_loss(output, dummy_target)
@@ -249,7 +255,11 @@ def train(
 
                 # Log to TensorBoard
                 writer.add_scalar("train/loss", loss.item() * config.grad_accum, global_step)
-                writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], global_step)
+                effective_lr = optimizer.param_groups[0]["lr"]
+                last_step = getattr(optimizer, "last_step_size", None)
+                if last_step is not None:
+                    effective_lr = last_step
+                writer.add_scalar("train/lr", effective_lr, global_step)
                 writer.add_scalar("train/epoch", current_epoch, global_step)
 
                 # Update progress bar
@@ -337,6 +347,11 @@ def save_checkpoint(
     torch.save(checkpoint, checkpoint_path)
     print(f"Saved checkpoint: {checkpoint_path}")
 
+    if is_final:
+        final_checkpoint = checkpoint_dir / "final.pt"
+        torch.save(checkpoint, final_checkpoint)
+        print(f"Saved final checkpoint: {final_checkpoint}")
+
     # Save LoRA-only weights in safetensors format for ComfyUI, etc.
     # Only export a safetensors LoRA file for the final checkpoint
     if is_final:
@@ -345,10 +360,11 @@ def save_checkpoint(
             from safetensors.torch import save_file
 
             lora_state = {
-                k: v.detach().cpu() for k, v in model.state_dict().items() if "lora_" in k
+                k: v.detach().cpu() for k, v in model.state_dict().items() if ".lora_" in k
             }
             if lora_state:
-                save_file(lora_state, lora_path)
+                converted = convert_lora_state(lora_state)
+                save_file(converted, str(lora_path))
                 print(f"Saved LoRA weights: {lora_path}")
             else:
                 print("Warning: No LoRA weights found to export.")

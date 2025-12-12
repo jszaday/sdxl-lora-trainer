@@ -35,6 +35,7 @@ optim = [
 
 [project.scripts]
 lora-train = "lora_trainer.cli:main"
+lora-convert = "lora_converter.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

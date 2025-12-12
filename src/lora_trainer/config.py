@@ -36,6 +36,7 @@ class TrainingConfig:
     sample_prompts: Path | None = None
     sample_every: int = 500
     samples_per_prompt: int = 1
+    sample_clip_skip: int = 1
 
     # LoRA parameters
     lora_rank: int = 16

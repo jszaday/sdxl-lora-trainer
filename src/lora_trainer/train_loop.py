@@ -134,6 +134,7 @@ def train(
 
     global_step = start_step
     current_epoch = 0
+    last_checkpoint_step: int | None = None
 
     # Progress bar for global steps
     pbar = tqdm(total=config.steps, desc="Training", unit="step", initial=global_step)
@@ -279,6 +280,7 @@ def train(
                         global_step=global_step,
                         checkpoint_dir=dirs["checkpoints"],
                     )
+                    last_checkpoint_step = global_step
 
                     # Run validation sampling
                     if config.sample_prompts is not None:
@@ -305,12 +307,14 @@ def train(
             break
 
     # Final checkpoint
+    already_saved = last_checkpoint_step == global_step
     save_checkpoint(
         model=model,
         optimizer=optimizer,
         global_step=global_step,
         checkpoint_dir=dirs["checkpoints"],
         is_final=True,
+        skip_step_save=already_saved,
     )
 
     pbar.close()
@@ -323,6 +327,7 @@ def save_checkpoint(
     global_step: int,
     checkpoint_dir: Path,
     is_final: bool = False,
+    skip_step_save: bool = False,
 ) -> None:
     """Save a training checkpoint.
 
@@ -332,6 +337,7 @@ def save_checkpoint(
         global_step: Current training step
         checkpoint_dir: Directory to save checkpoints
         is_final: Whether this is the final checkpoint
+        skip_step_save: Skip writing the step checkpoint if it already exists
     """
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -344,8 +350,10 @@ def save_checkpoint(
 
     # Always save full checkpoints as .pt for training resumes
     checkpoint_path = checkpoint_dir / f"step_{global_step:06d}.pt"
-    torch.save(checkpoint, checkpoint_path)
-    print(f"Saved checkpoint: {checkpoint_path}")
+    should_save_step = not (skip_step_save and checkpoint_path.exists())
+    if should_save_step:
+        torch.save(checkpoint, checkpoint_path)
+        print(f"Saved checkpoint: {checkpoint_path}")
 
     if is_final:
         final_checkpoint = checkpoint_dir / "final.pt"

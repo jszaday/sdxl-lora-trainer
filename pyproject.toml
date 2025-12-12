@@ -30,7 +30,7 @@ dev = [
 ]
 optim = [
     "prodigyopt",
-    "torch-optimizer",
+    "bitsandbytes",
 ]
 
 [project.scripts]

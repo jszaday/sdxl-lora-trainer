@@ -9,6 +9,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+from .sampling import run_validation_samples
+
 
 def encode_prompts(
     captions: list[str],
@@ -243,6 +245,22 @@ def train(
                         global_step=global_step,
                         checkpoint_dir=dirs["checkpoints"],
                     )
+
+                    # Run validation sampling
+                    if config.sample_prompts is not None:
+                        run_validation_samples(
+                            unet=model,
+                            vae=vae,
+                            text_encoder_1=text_encoder_1,
+                            text_encoder_2=text_encoder_2,
+                            tokenizer_1=tokenizer_1,
+                            tokenizer_2=tokenizer_2,
+                            config=config,
+                            global_step=global_step,
+                            samples_dir=dirs["samples"],
+                            writer=writer,
+                            device=device,
+                        )
 
                 # Check if we've reached the target number of steps
                 if global_step >= config.steps:

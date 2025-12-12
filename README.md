@@ -103,6 +103,8 @@ JSONL is also supported (one JSON object per line). Each entry may include:
 **Optimizer:**
 - `--learning_rate`: Learning rate (default: 1e-4)
 - `--grad_accum`: Gradient accumulation steps (default: 1)
+- `--optimizer`: Optimizer spec (default: `adamw`). Supports `adamw`, `lion`, `prodigy`. You can pass kwargs: e.g., `prodigy(lr=1e-4, weight_decay=0)`.
+  - Install extras if needed: `prodigyopt` for `prodigy`, `torch_optimizer` for `lion`.
 
 **Data:**
 - `--image_size`: Image size for training (default: 1024)
@@ -173,7 +175,7 @@ Your workspace will contain:
   checkpoints/        # Model checkpoints
     step_000500.pt
     step_001000.pt
-    final.pt
+    final_lora.safetensors
   tb/                 # TensorBoard logs
   samples/            # Validation images
     step_000500.png

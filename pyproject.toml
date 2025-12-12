@@ -28,6 +28,10 @@ dev = [
     "isort>=5.12.0",
     "ruff>=0.1.0",
 ]
+optim = [
+    "prodigyopt",
+    "torch-optimizer",
+]
 
 [project.scripts]
 lora-train = "lora_trainer.cli:main"

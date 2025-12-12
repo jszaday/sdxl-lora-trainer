@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import torch
-import torch.optim as optim
 
 from .config import TrainingConfig
 from .data import build_dataloader
@@ -79,6 +78,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Gradient accumulation steps (default: 1)",
+    )
+    optim_group.add_argument(
+        "--optimizer",
+        type=str,
+        default="adamw",
+        help="Optimizer spec, e.g., adamw or prodigy(lr=1e-4, weight_decay=0)",
     )
 
     # Data arguments
@@ -204,6 +209,7 @@ def main() -> None:
             workspace=args.workspace,
             learning_rate=args.learning_rate,
             grad_accum=args.grad_accum,
+            optimizer=args.optimizer,
             image_size=args.image_size,
             num_workers=args.num_workers,
             scheduler=args.scheduler,
@@ -275,6 +281,7 @@ def main() -> None:
 
     # Import model loading functions
     from .model import load_sdxl_unet, load_text_encoders, load_vae, select_lora_params
+    from .optim import build_optimizer
 
     model = load_sdxl_unet(
         config.checkpoint,
@@ -297,7 +304,11 @@ def main() -> None:
     print(f"Trainable LoRA parameters: {num_params:,}")
 
     # Create optimizer
-    optimizer = optim.AdamW(trainable_params, lr=config.learning_rate)
+    optimizer = build_optimizer(
+        trainable_params,
+        spec=config.optimizer,
+        base_lr=config.learning_rate,
+    )
 
     # Resume from checkpoint if requested
     resume_step = 0

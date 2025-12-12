@@ -22,6 +22,7 @@ class TrainingConfig:
     # Optimizer parameters
     learning_rate: float = 1e-4
     grad_accum: int = 1
+    optimizer: str = "adamw"
 
     # Data parameters
     image_size: int = 1024  # SDXL native resolution
@@ -148,6 +149,7 @@ class TrainingConfig:
             f"Total Steps:         {self.steps}",
             f"Total Epochs:        {self.num_epochs}",
             f"Learning Rate:       {self.learning_rate}",
+            f"Optimizer:           {self.optimizer}",
             "",
             f"LoRA Rank:           {self.lora_rank}",
             f"LoRA Alpha:          {self.lora_alpha}",

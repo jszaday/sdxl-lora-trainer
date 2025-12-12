@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import torch
 
+from .config import TrainingConfig
 from .logging import create_run_dirs, init_tensorboard
 from .model import load_sdxl_unet, load_text_encoders, load_vae
 from .sampling import run_validation_samples
-from .train_loop import load_checkpoint
 from .utils import set_seed
 
 
@@ -84,14 +84,14 @@ def parse_args() -> argparse.Namespace:
     lora_group.add_argument(
         "--lora_rank",
         type=int,
-        default=16,
-        help="Rank of LoRA matrices (default: 16)",
+        default=None,
+        help="Rank of LoRA matrices (auto-detected from LoRA checkpoint if provided)",
     )
     lora_group.add_argument(
         "--lora_alpha",
         type=float,
-        default=16.0,
-        help="LoRA alpha scaling parameter (default: 16.0)",
+        default=None,
+        help=f"LoRA alpha scaling parameter (default: {TrainingConfig.lora_alpha} if not provided)",
     )
     lora_group.add_argument(
         "--lora_checkpoint",
@@ -157,25 +157,58 @@ def main() -> None:
 
     writer = init_tensorboard(dirs["tb"])
 
+    # Optionally detect LoRA rank from checkpoint before loading UNet
+    detected_rank: int | None = None
+    if args.lora_checkpoint is not None:
+        try:
+            state = torch.load(args.lora_checkpoint, map_location="cpu")
+            if isinstance(state, dict) and "model_state_dict" in state:
+                state = state["model_state_dict"]
+            lora_state = {k: v for k, v in state.items() if "lora_" in k}
+        except Exception:
+            try:
+                from safetensors.torch import load_file
+
+                state = load_file(str(args.lora_checkpoint))
+                lora_state = {k: v for k, v in state.items() if "lora_" in k}
+            except Exception as e:
+                print(f"Error loading LoRA checkpoint for detection: {e}")
+                sys.exit(1)
+
+        for k, v in lora_state.items():
+            if "lora_down.weight" in k:
+                detected_rank = v.shape[0]
+                break
+        if detected_rank is not None:
+            print(f"Detected LoRA rank {detected_rank} from checkpoint")
+
+    effective_rank = args.lora_rank or detected_rank or TrainingConfig.lora_rank
+    effective_alpha = args.lora_alpha if args.lora_alpha is not None else TrainingConfig.lora_alpha
+    if args.lora_alpha is None and detected_rank is not None and args.lora_rank is None:
+        print(
+            f"Using detected lora_rank={effective_rank}; lora_alpha defaulting to {effective_alpha}"
+        )
+
     # Load models
     print(f"\nLoading UNet from: {args.checkpoint}")
     unet = load_sdxl_unet(
         checkpoint_or_model_id=args.checkpoint,
         device=device,
         dtype=dtype,
-        lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha,
+        lora_rank=effective_rank,
+        lora_alpha=effective_alpha,
     )
 
     if args.lora_checkpoint is not None:
         print(f"Loading LoRA weights from: {args.lora_checkpoint}")
-        resume_step = load_checkpoint(
-            checkpoint_path=args.lora_checkpoint,
-            model=unet,
-            optimizer=None,
-            device=device,
-        )
-        print(f"Loaded checkpoint step: {resume_step}")
+        try:
+            missing = unet.load_state_dict(lora_state, strict=False)
+            print(f"Applied {len(lora_state)} LoRA tensors")
+            if missing.missing_keys:
+                print(f"Warning: missing keys when loading LoRA: {missing.missing_keys}")
+        except Exception as e:
+            print(f"Error loading LoRA weights: {e}")
+            sys.exit(1)
 
     print("Loading VAE...")
     vae = load_vae(args.checkpoint, device=device, dtype=dtype)

@@ -332,13 +332,28 @@ def save_checkpoint(
         "global_step": global_step,
     }
 
-    if is_final:
-        checkpoint_path = checkpoint_dir / "final.pt"
-    else:
-        checkpoint_path = checkpoint_dir / f"step_{global_step:06d}.pt"
-
+    # Always save full checkpoints as .pt for training resumes
+    checkpoint_path = checkpoint_dir / f"step_{global_step:06d}.pt"
     torch.save(checkpoint, checkpoint_path)
     print(f"Saved checkpoint: {checkpoint_path}")
+
+    # Save LoRA-only weights in safetensors format for ComfyUI, etc.
+    # Only export a safetensors LoRA file for the final checkpoint
+    if is_final:
+        lora_path = checkpoint_dir / "final_lora.safetensors"
+        try:
+            from safetensors.torch import save_file
+
+            lora_state = {
+                k: v.detach().cpu() for k, v in model.state_dict().items() if "lora_" in k
+            }
+            if lora_state:
+                save_file(lora_state, lora_path)
+                print(f"Saved LoRA weights: {lora_path}")
+            else:
+                print("Warning: No LoRA weights found to export.")
+        except Exception as e:
+            print(f"Warning: Failed to save LoRA safetensors ({e})")
 
 
 def load_checkpoint(

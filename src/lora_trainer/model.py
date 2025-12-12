@@ -23,7 +23,8 @@ def _load_pipeline_from_single_file(
     This loads the entire pipeline once and caches it so we can extract
     individual components (UNet, VAE, text encoders) without reloading.
     """
-    cache_key = f"{checkpoint_path}_{device}"
+    # Include dtype in cache key so fp16/fp32 pipelines don't collide.
+    cache_key = f"{checkpoint_path}_{device}_{str(dtype)}"
     if cache_key not in _SINGLE_FILE_CACHE:
         print(f"Loading full pipeline from {checkpoint_path}")
         pipeline = StableDiffusionXLPipeline.from_single_file(
@@ -57,8 +58,15 @@ class LoRALayer(nn.Module):
         in_features = original_layer.in_features
         out_features = original_layer.out_features
 
-        self.lora_down = nn.Linear(in_features, rank, bias=False)
-        self.lora_up = nn.Linear(rank, out_features, bias=False)
+        # Keep LoRA params on the same dtype/device as the wrapped layer to avoid
+        # mixed precision matmul issues (e.g., fp16 inputs with fp32 LoRA weights).
+        param_kwargs = {
+            "device": original_layer.weight.device,
+            "dtype": original_layer.weight.dtype,
+            "bias": False,
+        }
+        self.lora_down = nn.Linear(in_features, rank, **param_kwargs)
+        self.lora_up = nn.Linear(rank, out_features, **param_kwargs)
 
         # Initialize: A with kaiming_uniform, B with zeros
         nn.init.kaiming_uniform_(self.lora_down.weight, a=5**0.5)

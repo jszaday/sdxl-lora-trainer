@@ -204,9 +204,11 @@ def train(
                 # Simple MSE loss on model output
                 dummy_target = torch.zeros(
                     config.batch_size, 4, config.image_size // 8, config.image_size // 8
-                ).to(device)
+                ).to(device=device, dtype=model.dtype)
                 dummy_timesteps = torch.zeros(config.batch_size, device=device).long()
-                dummy_embeds = torch.zeros(config.batch_size, 77, 2048, device=device)
+                dummy_embeds = torch.zeros(
+                    config.batch_size, 77, 2048, device=device, dtype=model.dtype
+                )
                 output = model(pixel_values, dummy_timesteps, dummy_embeds).sample
                 loss = torch.nn.functional.mse_loss(output, dummy_target)
 

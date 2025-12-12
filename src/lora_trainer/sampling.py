@@ -3,6 +3,8 @@
 Generates sample images during training to visualize LoRA progress.
 """
 
+import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -14,6 +16,64 @@ from torchvision.utils import make_grid
 from tqdm import tqdm
 
 from .schedulers import build_noise_scheduler
+
+
+@dataclass
+class PromptSpec:
+    prompt: str
+    negative: str = ""
+    seed: int | None = None
+
+
+def _normalize_prompt_entry(entry: object) -> PromptSpec:
+    """Normalize a prompt entry from JSON/JSONL into PromptSpec."""
+    if isinstance(entry, str):
+        return PromptSpec(prompt=entry)
+
+    if isinstance(entry, dict):
+        prompt = entry.get("prompt") or entry.get("positive") or entry.get("text")
+        if not prompt or not isinstance(prompt, str):
+            raise ValueError("Prompt entry missing 'prompt'/'positive' text")
+
+        negative = entry.get("negative") or ""
+        if not isinstance(negative, str):
+            raise ValueError("Prompt entry 'negative' must be a string if provided")
+
+        seed = entry.get("seed")
+        if seed is not None and not isinstance(seed, int):
+            raise ValueError("Prompt entry 'seed' must be an integer if provided")
+
+        return PromptSpec(prompt=prompt, negative=negative, seed=seed)
+
+    raise ValueError("Prompt entry must be a string or object with prompt/negative/seed")
+
+
+def load_prompt_specs(path: Path, samples_per_prompt: int) -> list[PromptSpec]:
+    """Load prompts from JSON/JSONL with optional negative prompts and seeds."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Prompt file not found: {path}")
+
+    if path.suffix.lower() == ".jsonl":
+        entries = []
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            entries.append(json.loads(line))
+    else:
+        data = json.loads(path.read_text())
+        if isinstance(data, list):
+            entries = data
+        else:
+            entries = [data]
+
+    specs: list[PromptSpec] = []
+    for entry in entries:
+        spec = _normalize_prompt_entry(entry)
+        specs.extend([spec] * samples_per_prompt)
+
+    return specs
 
 
 def encode_prompts_for_sampling(
@@ -87,6 +147,7 @@ def sample_with_cfg(
     width: int,
     device: str,
     dtype: torch.dtype,
+    seeds: list[int | None] | None = None,
 ) -> torch.Tensor:
     """Run diffusion sampling with classifier-free guidance.
 
@@ -112,11 +173,30 @@ def sample_with_cfg(
 
     # Prepare latents (random noise)
     batch_size = prompt_embeds.shape[0]
-    latents = torch.randn(
-        (batch_size, 4, height // 8, width // 8),
-        device=device,
-        dtype=dtype,
-    )
+    if seeds is not None:
+        latents = []
+        for seed in seeds:
+            seed_val = (
+                seed
+                if seed is not None
+                else int(torch.randint(low=0, high=2**31 - 1, size=(1,)).item())
+            )
+            generator = torch.Generator(device=device).manual_seed(seed_val)
+            latents.append(
+                torch.randn(
+                    (4, height // 8, width // 8),
+                    generator=generator,
+                    device=device,
+                    dtype=dtype,
+                )
+            )
+        latents = torch.stack(latents, dim=0)
+    else:
+        latents = torch.randn(
+            (batch_size, 4, height // 8, width // 8),
+            device=device,
+            dtype=dtype,
+        )
 
     # Scale initial noise by scheduler
     latents = latents * scheduler.init_noise_sigma
@@ -216,20 +296,16 @@ def run_validation_samples(
     if config.sample_prompts is None:
         return
 
-    # Load prompts
-    prompts = []
-    with open(config.sample_prompts) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                prompts.append(line)
+    # Load structured prompts
+    prompt_specs = load_prompt_specs(config.sample_prompts, config.samples_per_prompt)
 
-    if not prompts:
+    if not prompt_specs:
         print("Warning: No prompts found in sample_prompts file")
         return
 
-    # Repeat each prompt samples_per_prompt times
-    prompts = prompts * config.samples_per_prompt
+    prompts = [spec.prompt for spec in prompt_specs]
+    negative_prompts = [spec.negative for spec in prompt_specs]
+    seeds = [spec.seed for spec in prompt_specs]
 
     print(f"\nGenerating {len(prompts)} validation samples...")
 
@@ -247,7 +323,6 @@ def run_validation_samples(
     )
 
     # Encode negative prompts (empty string)
-    negative_prompts = [""] * len(prompts)
     negative_prompt_embeds, pooled_negative_prompt_embeds = encode_prompts_for_sampling(
         negative_prompts,
         text_encoder_1,
@@ -278,6 +353,7 @@ def run_validation_samples(
         width=config.image_size,
         device=device,
         dtype=dtype,
+        seeds=seeds,
     )
 
     # Decode to images

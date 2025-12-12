@@ -9,7 +9,12 @@ import torch
 import torch.nn as nn
 from diffusers import DDIMScheduler
 
-from lora_trainer.sampling import encode_prompts_for_sampling, sample_with_cfg
+from lora_trainer.sampling import (
+    PromptSpec,
+    encode_prompts_for_sampling,
+    load_prompt_specs,
+    sample_with_cfg,
+)
 
 
 class DummyUNet(nn.Module):
@@ -191,8 +196,18 @@ def temp_workspace():
 
 def test_sample_prompts_file_creation(temp_workspace):
     """Test that sample prompts can be loaded from a file."""
-    prompts_file = temp_workspace / "prompts.txt"
-    prompts_file.write_text("a cat\na dog\na bird\n")
+    prompts_file = temp_workspace / "prompts.json"
+    prompts_file.write_text(
+        '[{"prompt": "a cat", "negative": "blurry", "seed": 1}, {"prompt": "a dog"}]'
+    )
+
+    specs = load_prompt_specs(prompts_file, samples_per_prompt=2)
+    assert len(specs) == 4
+    assert specs[0] == PromptSpec(prompt="a cat", negative="blurry", seed=1)
+    assert specs[1].prompt == "a cat"
+    assert specs[2].prompt == "a dog"
+    assert specs[2].negative == ""
+    assert specs[2].seed is None
 
     # Read prompts
     prompts = []

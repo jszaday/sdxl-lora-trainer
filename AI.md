@@ -310,6 +310,28 @@ Goal: Make the trainer feel **fast and polished**, not like a sluggish research 
   * Clear startup printout summarizing all effective settings (including computed `steps_per_epoch`, `num_epochs`, `effective_batch`).
   * Friendly error messages when configs are inconsistent (e.g. `steps` too small vs dataset/documented expectations).
 
+### TODO: Low-VRAM Mode
+
+- Add `--low_vram` flag that:
+  - Enables gradient checkpointing on UNet/text encoders.
+  - Offloads unused modules (VAE, text encoders, non-LoRA UNet parts) to CPU via `enable_sequential_cpu_offload`/`enable_model_cpu_offload` or `accelerate` cpu_offload.
+  - Optionally switches optimizer to bitsandbytes AdamW8bit and keeps optimizer states on CPU.
+  - Forces consistent mixed precision (fp16/bf16) and keeps LoRA params in-model dtype.
+  - Minimizes device hops in the training inner loop; ensures components are moved back before sampling.
+
+### TODO: Structured Sampling Prompts
+
+- Allow a JSON/JSONL prompts file with per-sample fields: `positive`, `negative`, `seed`, and optional `cfg`, `sampler_steps`, etc.
+- Maintain simple text-file compatibility (one prompt per line) as a fallback.
+- Wire parsing into sampling so each sample can carry its own negative prompt and seed for reproducibility.
+
+### TODO: Optimizer Flexibility
+
+- Add a `--optimizer` choice with plug-ins: `adamw`, `adamw_8bit` (bitsandbytes), `lion`, `prodigy`, etc.
+- Accept optimizer-specific knobs (weight decay, beta params, trust region/ema toggles) with sane defaults per optimizer.
+- Ensure dtype/device compatibility for 8bit/low-precision optimizers and make sure state init respects LoRA-only training.
+- Parse a compact function-call-like spec from the flag, e.g. `--optimizer "prodigy(lr=1e-4, weight_decay=0, slice_p=11)"`, merging provided kwargs over defaults and validating fields.
+
 **Tests**
 
 * Ensure progress bar still works in non-interactive environments (or degrade gracefully).

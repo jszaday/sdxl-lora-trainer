@@ -74,7 +74,7 @@ python -m lora_trainer.cli \
   --steps 5000 \
   --batch_size 4 \
   --workspace ./runs/experiment \
-  --sample_prompts prompts.txt \
+  --sample_prompts prompts.json \
   --sample_every 500 \
   --scheduler karras \
   --sampler euler_ancestral \
@@ -83,13 +83,20 @@ python -m lora_trainer.cli \
   --samples_per_prompt 2
 ```
 
-Create `prompts.txt` with one prompt per line:
+Structured prompts are provided as JSON/JSONL with per-sample fields:
 
+```json
+[
+  { "prompt": "a photo of a mountain landscape", "negative": "low-res", "seed": 1234 },
+  { "prompt": "a portrait of a person", "negative": "blurry" },
+  { "prompt": "a cute cat", "seed": 42 }
+]
 ```
-a photo of a mountain landscape
-a portrait of a person
-a cute cat
-```
+
+JSONL is also supported (one JSON object per line). Each entry may include:
+- `prompt`/`positive`: required positive text
+- `negative`: optional negative prompt (defaults to empty)
+- `seed`: optional integer seed
 
 ### All CLI Options
 
@@ -119,6 +126,24 @@ a cute cat
 - `--seed`: Random seed (default: 42)
 - `--mixed_precision`: Mixed precision mode - `no`, `fp16`, `bf16` (default: fp16)
 - `--resume_from`: Checkpoint file or directory to resume training from. If a directory is given, the newest `.pt` file is picked.
+
+### Standalone Sampler CLI
+
+Run sampling without training using the structured prompts file:
+
+```bash
+python -m lora_trainer.sampler_cli \
+  --checkpoint base_sdxl.safetensors \
+  --sample_prompts prompts.json \
+  --workspace ./runs/sampler_outputs \
+  --scheduler karras \
+  --cfg 7.0 \
+  --sampler_steps 30
+```
+
+- Supports the same prompt JSON/JSONL format as training.
+- Optional: `--lora_checkpoint` to load LoRA weights from a training checkpoint before sampling.
+- Outputs samples to `{workspace}/samples/` and logs images to `{workspace}/tb/`.
 
 ## Monitoring Training
 

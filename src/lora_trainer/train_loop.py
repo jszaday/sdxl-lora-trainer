@@ -139,8 +139,8 @@ def train(
             if use_real_diffusion:
                 # Real diffusion training
                 with torch.no_grad():
-                    # Encode images to latents
-                    latents = vae.encode(pixel_values).latent_dist.sample()
+                    # Encode images to latents (convert to VAE's dtype)
+                    latents = vae.encode(pixel_values.to(vae.dtype)).latent_dist.sample()
                     latents = latents * vae.config.scaling_factor
 
                     # Encode prompts

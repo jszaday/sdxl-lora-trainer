@@ -4,11 +4,35 @@ Phase 2: Real SDXL UNet loading with LoRA injection.
 """
 
 from collections.abc import Iterator
+from pathlib import Path
 
 import torch
 import torch.nn as nn
-from diffusers import AutoencoderKL, UNet2DConditionModel
+from diffusers import AutoencoderKL, StableDiffusionXLPipeline, UNet2DConditionModel
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
+
+# Cache for loaded pipeline components from single-file checkpoints
+_SINGLE_FILE_CACHE = {}
+
+
+def _load_pipeline_from_single_file(
+    checkpoint_path: str, dtype: torch.dtype, device: str = "cpu"
+) -> StableDiffusionXLPipeline:
+    """Load full SDXL pipeline from single file checkpoint.
+
+    This loads the entire pipeline once and caches it so we can extract
+    individual components (UNet, VAE, text encoders) without reloading.
+    """
+    cache_key = f"{checkpoint_path}_{device}"
+    if cache_key not in _SINGLE_FILE_CACHE:
+        print(f"Loading full pipeline from {checkpoint_path}")
+        pipeline = StableDiffusionXLPipeline.from_single_file(
+            checkpoint_path,
+            torch_dtype=dtype,
+            device=device,
+        )
+        _SINGLE_FILE_CACHE[cache_key] = pipeline
+    return _SINGLE_FILE_CACHE[cache_key]
 
 
 class LoRALayer(nn.Module):
@@ -118,7 +142,7 @@ def load_sdxl_unet(
     """Load SDXL UNet and inject LoRA layers.
 
     Args:
-        checkpoint_or_model_id: HuggingFace model ID or local checkpoint path
+        checkpoint_or_model_id: HuggingFace model ID, diffusers directory, or .safetensors file
         device: Device to load model on
         dtype: Model dtype
         lora_rank: LoRA rank for adaptation
@@ -129,12 +153,20 @@ def load_sdxl_unet(
     """
     print(f"Loading SDXL UNet from {checkpoint_or_model_id}")
 
-    # Load UNet from diffusers
-    unet = UNet2DConditionModel.from_pretrained(
-        checkpoint_or_model_id,
-        subfolder="unet" if "/" in checkpoint_or_model_id else None,
-        torch_dtype=dtype,
-    )
+    checkpoint_path = Path(checkpoint_or_model_id)
+
+    # Check if it's a single file checkpoint (.safetensors or .ckpt)
+    if checkpoint_path.exists() and checkpoint_path.is_file():
+        # Load from single file - extract UNet from full pipeline
+        pipeline = _load_pipeline_from_single_file(checkpoint_or_model_id, dtype, device)
+        unet = pipeline.unet
+    else:
+        # Load from HuggingFace repo or diffusers directory
+        unet = UNet2DConditionModel.from_pretrained(
+            checkpoint_or_model_id,
+            subfolder="unet" if "/" in checkpoint_or_model_id else None,
+            torch_dtype=dtype,
+        )
 
     # Inject LoRA
     unet = inject_lora_into_unet(unet, rank=lora_rank, alpha=lora_alpha)
@@ -151,18 +183,28 @@ def load_vae(
     """Load SDXL VAE for encoding images to latents.
 
     Args:
-        checkpoint_or_model_id: HuggingFace model ID or local checkpoint path
+        checkpoint_or_model_id: HuggingFace model ID, diffusers directory, or .safetensors file
         device: Device to load VAE on
         dtype: VAE dtype
 
     Returns:
         VAE model
     """
-    vae = AutoencoderKL.from_pretrained(
-        checkpoint_or_model_id,
-        subfolder="vae" if "/" in checkpoint_or_model_id else None,
-        torch_dtype=dtype,
-    )
+    checkpoint_path = Path(checkpoint_or_model_id)
+
+    # Check if it's a single file checkpoint
+    if checkpoint_path.exists() and checkpoint_path.is_file():
+        # Load from single file - extract VAE from full pipeline
+        pipeline = _load_pipeline_from_single_file(checkpoint_or_model_id, dtype, device)
+        vae = pipeline.vae
+    else:
+        # Load from HuggingFace repo or diffusers directory
+        vae = AutoencoderKL.from_pretrained(
+            checkpoint_or_model_id,
+            subfolder="vae" if "/" in checkpoint_or_model_id else None,
+            torch_dtype=dtype,
+        )
+
     vae = vae.to(device)
     vae.requires_grad_(False)  # VAE is frozen during training
     return vae
@@ -178,34 +220,48 @@ def load_text_encoders(
     SDXL uses two text encoders: CLIP ViT-L and OpenCLIP ViT-bigG.
 
     Args:
-        checkpoint_or_model_id: HuggingFace model ID or local checkpoint path
+        checkpoint_or_model_id: HuggingFace model ID, diffusers directory, or .safetensors file
         device: Device to load encoders on
         dtype: Encoder dtype
 
     Returns:
         Tuple of (text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2)
     """
-    # Text encoder 1 (CLIP ViT-L)
-    text_encoder_1 = CLIPTextModel.from_pretrained(
-        checkpoint_or_model_id,
-        subfolder="text_encoder" if "/" in checkpoint_or_model_id else None,
-        torch_dtype=dtype,
-    )
-    tokenizer_1 = CLIPTokenizer.from_pretrained(
-        checkpoint_or_model_id,
-        subfolder="tokenizer" if "/" in checkpoint_or_model_id else None,
-    )
+    checkpoint_path = Path(checkpoint_or_model_id)
 
-    # Text encoder 2 (OpenCLIP ViT-bigG)
-    text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
-        checkpoint_or_model_id,
-        subfolder="text_encoder_2" if "/" in checkpoint_or_model_id else None,
-        torch_dtype=dtype,
-    )
-    tokenizer_2 = CLIPTokenizer.from_pretrained(
-        checkpoint_or_model_id,
-        subfolder="tokenizer_2" if "/" in checkpoint_or_model_id else None,
-    )
+    # Check if it's a single file checkpoint
+    if checkpoint_path.exists() and checkpoint_path.is_file():
+        # Load from single file - extract text encoders from full pipeline
+        pipeline = _load_pipeline_from_single_file(checkpoint_or_model_id, dtype, device)
+        text_encoder_1 = pipeline.text_encoder
+        text_encoder_2 = pipeline.text_encoder_2
+        tokenizer_1 = pipeline.tokenizer
+        tokenizer_2 = pipeline.tokenizer_2
+    else:
+        # Load from HuggingFace repo or diffusers directory
+        base_model = checkpoint_or_model_id
+
+        # Text encoder 1 (CLIP ViT-L)
+        text_encoder_1 = CLIPTextModel.from_pretrained(
+            base_model,
+            subfolder="text_encoder" if "/" in base_model else None,
+            torch_dtype=dtype,
+        )
+        tokenizer_1 = CLIPTokenizer.from_pretrained(
+            base_model,
+            subfolder="tokenizer" if "/" in base_model else None,
+        )
+
+        # Text encoder 2 (OpenCLIP ViT-bigG)
+        text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+            base_model,
+            subfolder="text_encoder_2" if "/" in base_model else None,
+            torch_dtype=dtype,
+        )
+        tokenizer_2 = CLIPTokenizer.from_pretrained(
+            base_model,
+            subfolder="tokenizer_2" if "/" in base_model else None,
+        )
 
     text_encoder_1 = text_encoder_1.to(device)
     text_encoder_2 = text_encoder_2.to(device)

@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 
 import torch
@@ -149,6 +150,13 @@ def parse_args() -> argparse.Namespace:
     # Misc arguments
     misc_group = parser.add_argument_group("misc arguments")
     misc_group.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="Device to use for training (e.g., 'cuda', 'cpu', 'cuda:0', 'mps'). "
+        "If not specified, automatically selects cuda if available, otherwise cpu.",
+    )
+    misc_group.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -204,7 +212,10 @@ def main() -> None:
     set_seed(config.seed)
 
     # Determine device
-    if torch.cuda.is_available():
+    if args.device is not None:
+        device = args.device
+        print(f"\nUsing device: {device}")
+    elif torch.cuda.is_available():
         device = "cuda"
         print(f"\nUsing GPU: {torch.cuda.get_device_name(0)}")
     else:

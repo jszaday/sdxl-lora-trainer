@@ -13,15 +13,17 @@ This is a focused SDXL LoRA trainer designed for ease of use with ComfyUI-style 
 
 ## Installation
 
-```bash
-# Clone the repository
-git clone <repository-url>
-cd lora-trainer
+**Recommended: Use a virtual environment**
 
-# Install in development mode
+```bash
+# Create and activate virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install the package
 pip install -e .
 
-# Or install with dev dependencies
+# Or install with dev dependencies for testing
 pip install -e ".[dev]"
 ```
 
@@ -113,6 +115,7 @@ a cute cat
 - `--lora_alpha`: LoRA alpha scaling (default: 16.0)
 
 **Misc:**
+- `--device`: Device to use for training - `cuda`, `cpu`, `mps`, etc. (auto-detected if not specified)
 - `--seed`: Random seed (default: 42)
 - `--mixed_precision`: Mixed precision mode - `no`, `fp16`, `bf16` (default: fp16)
 
@@ -120,11 +123,20 @@ a cute cat
 
 ### TensorBoard
 
-View training metrics in real-time:
+The trainer writes logs to `{workspace}/tb/`. Launch TensorBoard separately to view them:
 
 ```bash
-tensorboard --logdir ./runs/my_experiment/tb
+# Install TensorBoard (in your venv)
+pip install tensorboard
+
+# Launch TensorBoard with custom port
+tensorboard --logdir ./runs/my_experiment/tb --port 6006
 ```
+
+Then open http://localhost:6006 in your browser to view:
+- Training loss curves
+- Learning rate schedules
+- Generated validation samples (images)
 
 ### Output Structure
 
@@ -178,20 +190,26 @@ ruff check src/ tests/
 - TensorBoard logging
 - Comprehensive test suite
 
-**Phase 2: In Progress**
-- Real SDXL UNet integration
-- LoRA module injection
-- Diffusion loss implementation
+**Phase 2: Complete** ✓
+- Real SDXL UNet integration with diffusers
+- LoRA module injection into attention and feedforward layers
+- Real diffusion loss with noise prediction
+- SDXL dual text encoder support
+- Single-file checkpoint loading (.safetensors)
+- Device selection (CUDA, CPU, MPS)
 
-**Phase 3: Planned**
-- Validation sampling
-- Scheduler & sampler integration
-- Sample image generation
+**Phase 3: Complete** ✓
+- Validation sampling during training
+- Scheduler & sampler integration (ComfyUI-compatible names)
+- Sample image generation with CFG
+- TensorBoard image logging
 
 **Phase 4: Planned**
 - Performance optimizations
-- Enhanced logging
+- Enhanced logging and progress tracking
 - Additional UX improvements
+
+**Test Status**: 53 tests passing, 2 skipped
 
 ## Contributing
 

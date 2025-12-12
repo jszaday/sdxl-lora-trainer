@@ -118,6 +118,7 @@ a cute cat
 - `--device`: Device to use for training - `cuda`, `cpu`, `mps`, etc. (auto-detected if not specified)
 - `--seed`: Random seed (default: 42)
 - `--mixed_precision`: Mixed precision mode - `no`, `fp16`, `bf16` (default: fp16)
+- `--resume_from`: Checkpoint file or directory to resume training from. If a directory is given, the newest `.pt` file is picked.
 
 ## Monitoring Training
 
@@ -152,6 +153,24 @@ Your workspace will contain:
   samples/            # Validation images
     step_000500.png
     step_001000.png
+
+## Resuming Training
+
+You can continue a run from any saved checkpoint:
+
+```bash
+python -m lora_trainer.cli \
+  --checkpoint stabilityai/stable-diffusion-xl-base-1.0 \
+  --train_data /path/to/training/images \
+  --steps 5000 \
+  --batch_size 4 \
+  --workspace ./runs/my_experiment \
+  --resume_from ./runs/my_experiment/checkpoints/step_002500.pt
+```
+
+- Point `--resume_from` at a specific `.pt` file, or at the `checkpoints/` directory to automatically use the most recent checkpoint.
+- Model and optimizer states are restored and training continues from the saved `global_step`. If the checkpoint step is already >= target `--steps`, the run exits.
+- Validation sampling will also run at step 0 when prompts are provided, so you get a before/after comparison.
 ```
 
 ## Development

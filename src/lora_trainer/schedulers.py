@@ -8,13 +8,7 @@ TODO: Expand to match full ComfyUI scheduler/sampler set:
 For now, we support the most common ones that match ComfyUI's names.
 """
 
-from diffusers import (
-    DDIMScheduler,
-    DDPMScheduler,
-    EulerAncestralDiscreteScheduler,
-    EulerDiscreteScheduler,
-    HeunDiscreteScheduler,
-)
+from diffusers import DDIMScheduler, DDPMScheduler, EulerDiscreteScheduler
 
 
 def build_noise_scheduler(name: str, num_inference_steps: int = 50) -> object:

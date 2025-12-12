@@ -7,14 +7,9 @@ from pathlib import Path
 import pytest
 import torch
 import torch.nn as nn
-from diffusers import AutoencoderKL, DDIMScheduler
+from diffusers import DDIMScheduler
 
-from lora_trainer.config import TrainingConfig
-from lora_trainer.sampling import (
-    decode_latents,
-    encode_prompts_for_sampling,
-    sample_with_cfg,
-)
+from lora_trainer.sampling import encode_prompts_for_sampling, sample_with_cfg
 
 
 class DummyUNet(nn.Module):

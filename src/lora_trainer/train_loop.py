@@ -83,6 +83,7 @@ def train(
     text_encoder_2=None,
     tokenizer_1=None,
     tokenizer_2=None,
+    start_step: int = 0,
 ) -> None:
     """Run the complete training loop.
 
@@ -125,11 +126,32 @@ def train(
             text_encoder_2 = text_encoder_2.to(device)
             text_encoder_2.eval()
 
-    global_step = 0
+    global_step = start_step
     current_epoch = 0
 
     # Progress bar for global steps
-    pbar = tqdm(total=config.steps, desc="Training", unit="step")
+    pbar = tqdm(total=config.steps, desc="Training", unit="step", initial=global_step)
+
+    # Optional initial sampling before training starts
+    if (
+        use_real_diffusion
+        and config.sample_prompts is not None
+        and global_step == 0
+        and config.sample_every > 0
+    ):
+        run_validation_samples(
+            unet=model,
+            vae=vae,
+            text_encoder_1=text_encoder_1,
+            text_encoder_2=text_encoder_2,
+            tokenizer_1=tokenizer_1,
+            tokenizer_2=tokenizer_2,
+            config=config,
+            global_step=global_step,
+            samples_dir=dirs["samples"],
+            writer=writer,
+            device=device,
+        )
 
     while global_step < config.steps:
         current_epoch += 1
@@ -317,3 +339,25 @@ def save_checkpoint(
 
     torch.save(checkpoint, checkpoint_path)
     print(f"Saved checkpoint: {checkpoint_path}")
+
+
+def load_checkpoint(
+    checkpoint_path: Path,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer | None,
+    device: str,
+) -> int:
+    """Load model/optimizer state from a checkpoint file.
+
+    Returns:
+        global_step stored in the checkpoint (0 if missing)
+    """
+    checkpoint_path = Path(checkpoint_path)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    return int(checkpoint.get("global_step", 0))

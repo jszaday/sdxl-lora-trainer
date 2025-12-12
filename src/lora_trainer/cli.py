@@ -2,7 +2,6 @@
 
 import argparse
 import sys
-import warnings
 from pathlib import Path
 
 import torch
@@ -11,8 +10,20 @@ import torch.optim as optim
 from .config import TrainingConfig
 from .data import build_dataloader
 from .logging import create_run_dirs, init_tensorboard, log_hparams
-from .train_loop import train
+from .train_loop import load_checkpoint, train
 from .utils import set_seed
+
+
+def _resolve_resume_path(path: Path) -> Path:
+    """Resolve a resume target that may be a checkpoint file or directory."""
+    if path.is_file():
+        return path
+
+    # If a directory was provided, pick the newest .pt checkpoint by mtime.
+    candidates = sorted(path.glob("*.pt"), key=lambda p: p.stat().st_mtime)
+    if not candidates:
+        raise ValueError(f"No checkpoint files found in {path}")
+    return candidates[-1]
 
 
 def parse_args() -> argparse.Namespace:
@@ -169,6 +180,12 @@ def parse_args() -> argparse.Namespace:
         choices=["no", "fp16", "bf16"],
         help="Mixed precision training mode (default: fp16)",
     )
+    misc_group.add_argument(
+        "--resume_from",
+        type=Path,
+        default=None,
+        help="Checkpoint file or directory to resume training from",
+    )
 
     return parser.parse_args()
 
@@ -200,6 +217,7 @@ def main() -> None:
             lora_alpha=args.lora_alpha,
             seed=args.seed,
             mixed_precision=args.mixed_precision,
+            resume_from=args.resume_from,
         )
     except ValueError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
@@ -281,6 +299,25 @@ def main() -> None:
     # Create optimizer
     optimizer = optim.AdamW(trainable_params, lr=config.learning_rate)
 
+    # Resume from checkpoint if requested
+    resume_step = 0
+    if config.resume_from is not None:
+        resume_path = _resolve_resume_path(config.resume_from)
+        print(f"\nResuming from checkpoint: {resume_path}")
+        resume_step = load_checkpoint(
+            checkpoint_path=resume_path,
+            model=model,
+            optimizer=optimizer,
+            device=device,
+        )
+        print(f"  Loaded global_step={resume_step}")
+
+        if resume_step >= config.steps:
+            print(
+                f"Checkpoint step ({resume_step}) >= target steps ({config.steps}). Nothing to do."
+            )
+            return
+
     # Run training
     print("\nStarting training...\n")
     train(
@@ -296,6 +333,7 @@ def main() -> None:
         text_encoder_2=text_encoder_2,
         tokenizer_1=tokenizer_1,
         tokenizer_2=tokenizer_2,
+        start_step=resume_step,
     )
 
     # Cleanup

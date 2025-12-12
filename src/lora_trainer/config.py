@@ -43,6 +43,7 @@ class TrainingConfig:
     # Misc
     seed: int = 42
     mixed_precision: str = "fp16"  # "no", "fp16", "bf16"
+    resume_from: Path | None = None  # Optional checkpoint path/dir to resume from
 
     # Internal fields computed after init
     num_images: int = field(init=False, default=0)
@@ -57,6 +58,8 @@ class TrainingConfig:
         self.workspace = Path(self.workspace)
         if self.sample_prompts is not None:
             self.sample_prompts = Path(self.sample_prompts)
+        if self.resume_from is not None:
+            self.resume_from = Path(self.resume_from)
 
         # Validate required parameters
         if self.steps <= 0:
@@ -76,6 +79,8 @@ class TrainingConfig:
 
         if self.sample_prompts is not None and not self.sample_prompts.exists():
             raise ValueError(f"sample_prompts file does not exist: {self.sample_prompts}")
+        if self.resume_from is not None and not self.resume_from.exists():
+            raise ValueError(f"resume_from path does not exist: {self.resume_from}")
 
         # Validate sampling parameters
         if self.cfg < 0:
@@ -150,6 +155,7 @@ class TrainingConfig:
             f"Image Size:          {self.image_size}x{self.image_size}",
             f"Mixed Precision:     {self.mixed_precision}",
             f"Seed:                {self.seed}",
+            f"Resume From:         {self.resume_from or 'None'}",
             "",
             f"Scheduler:           {self.scheduler}",
             f"Sampler:             {self.sampler}",

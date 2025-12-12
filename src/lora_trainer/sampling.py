@@ -291,7 +291,7 @@ def run_validation_samples(
     save_path = samples_dir / f"step_{global_step:06d}.png"
 
     # Convert to PIL and save
-    grid_np = grid.cpu().permute(1, 2, 0).numpy()
+    grid_np = grid.to(torch.float32).cpu().permute(1, 2, 0).numpy()
     grid_np = (grid_np * 255).astype("uint8")
     Image.fromarray(grid_np).save(save_path)
 

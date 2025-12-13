@@ -1,5 +1,7 @@
 """Dataset and DataLoader utilities for training."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 import torch
@@ -93,6 +95,73 @@ class ImageFolderWithCaptions(Dataset):
         }
 
 
+class CachedLatentsDataset(Dataset):
+    """Dataset for pre-cached latents and text embeddings.
+
+    Expects a cache directory structure created by preprocess.py:
+        /path/to/cache/
+            metadata.pt
+            latents/
+                000000.pt
+                000001.pt
+                ...
+            embeds/
+                000000.pt
+                000001.pt
+                ...
+    """
+
+    def __init__(self, cache_dir: Path):
+        """Initialize dataset from cached tensors.
+
+        Args:
+            cache_dir: Directory containing cached latents and embeddings
+        """
+        self.cache_dir = Path(cache_dir)
+        self.latents_dir = self.cache_dir / "latents"
+        self.embeds_dir = self.cache_dir / "embeds"
+
+        # Load metadata
+        metadata_path = self.cache_dir / "metadata.pt"
+        if not metadata_path.exists():
+            raise ValueError(f"Metadata file not found: {metadata_path}")
+
+        self.metadata = torch.load(metadata_path)
+        self.num_samples = self.metadata["num_samples"]
+
+        # Verify cache exists
+        if not self.latents_dir.exists():
+            raise ValueError(f"Latents directory not found: {self.latents_dir}")
+        if not self.embeds_dir.exists():
+            raise ValueError(f"Embeddings directory not found: {self.embeds_dir}")
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        """Get a single item from the cached dataset.
+
+        Returns:
+            Dictionary with:
+            - 'latents': Pre-encoded VAE latents [C, H, W]
+            - 'prompt_embeds': Text encoder embeddings
+            - 'pooled_embeds': Pooled text embeddings
+        """
+        # Load latent
+        latent_path = self.latents_dir / f"{idx:06d}.pt"
+        latents = torch.load(latent_path)
+
+        # Load embeddings
+        embed_path = self.embeds_dir / f"{idx:06d}.pt"
+        embeds = torch.load(embed_path)
+
+        return {
+            "latents": latents,
+            "prompt_embeds": embeds["prompt_embeds"],
+            "pooled_embeds": embeds["pooled_embeds"],
+        }
+
+
 def build_dataloader(
     data_dir: Path,
     batch_size: int,
@@ -119,6 +188,44 @@ def build_dataloader(
         image_size=image_size,
         center_crop=center_crop,
     )
+
+    loader_kwargs: dict = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": torch.cuda.is_available(),
+        "drop_last": True,  # Drop incomplete batches for consistent batch sizes
+    }
+    if torch.cuda.is_available() and num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+
+    dataloader = DataLoader(
+        dataset,
+        **loader_kwargs,
+    )
+
+    return dataloader
+
+
+def build_cached_dataloader(
+    cache_dir: Path,
+    batch_size: int,
+    num_workers: int = 4,
+    shuffle: bool = True,
+) -> DataLoader:
+    """Build a DataLoader for cached latents and embeddings.
+
+    Args:
+        cache_dir: Directory containing cached tensors
+        batch_size: Batch size
+        num_workers: Number of data loading workers
+        shuffle: Whether to shuffle the dataset
+
+    Returns:
+        Configured DataLoader
+    """
+    dataset = CachedLatentsDataset(cache_dir=cache_dir)
 
     loader_kwargs: dict = {
         "batch_size": batch_size,

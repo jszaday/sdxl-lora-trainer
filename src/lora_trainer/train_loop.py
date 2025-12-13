@@ -138,14 +138,34 @@ def train(
     copy_stream = torch.cuda.Stream(device=device) if use_cuda_device else None
 
     def _async_to_device(batch):
+        # Detect batch type: cached (has latents) or raw (has pixel_values)
+        is_cached = "latents" in batch
+
         if copy_stream is None:
-            return {
-                "pixel_values": batch["pixel_values"].to(device),
-                "caption": batch["caption"],
-            }
-        result = {"caption": batch["caption"]}
-        with torch.cuda.stream(copy_stream):
-            result["pixel_values"] = batch["pixel_values"].to(device, non_blocking=True)
+            # No async copying - just move to device
+            if is_cached:
+                return {
+                    "latents": batch["latents"].to(device),
+                    "prompt_embeds": batch["prompt_embeds"].to(device),
+                    "pooled_embeds": batch["pooled_embeds"].to(device),
+                }
+            else:
+                return {
+                    "pixel_values": batch["pixel_values"].to(device),
+                    "caption": batch["caption"],
+                }
+
+        # Async copying with CUDA streams
+        if is_cached:
+            result = {}
+            with torch.cuda.stream(copy_stream):
+                result["latents"] = batch["latents"].to(device, non_blocking=True)
+                result["prompt_embeds"] = batch["prompt_embeds"].to(device, non_blocking=True)
+                result["pooled_embeds"] = batch["pooled_embeds"].to(device, non_blocking=True)
+        else:
+            result = {"caption": batch["caption"]}
+            with torch.cuda.stream(copy_stream):
+                result["pixel_values"] = batch["pixel_values"].to(device, non_blocking=True)
         return result
 
     def _wait_for_batch():
@@ -199,11 +219,28 @@ def train(
                 raw_next = None
             prefetched = _async_to_device(raw_next) if raw_next is not None else None
 
-            pixel_values = batch["pixel_values"]
-            captions = batch["caption"]
+            # Detect if we're using cached data or raw images
+            use_cached_data = "latents" in batch
 
-            if use_real_diffusion:
-                # Real diffusion training
+            if use_cached_data:
+                # Using pre-cached latents and embeddings
+                latents = batch["latents"].to(device)
+                prompt_embeds = batch["prompt_embeds"].to(device)
+                pooled_embeds = batch["pooled_embeds"].to(device)
+
+                # SDXL uses pooled embeddings as added_cond_kwargs
+                added_cond_kwargs = {"text_embeds": pooled_embeds}
+                # Add time_ids (original size, crops, target size)
+                time_ids = torch.tensor([[1024, 1024, 0, 0, 1024, 1024]], device=device).repeat(
+                    latents.shape[0], 1
+                )
+                added_cond_kwargs["time_ids"] = time_ids
+
+            elif use_real_diffusion:
+                # Real diffusion training with on-the-fly encoding
+                pixel_values = batch["pixel_values"]
+                captions = batch["caption"]
+
                 with torch.no_grad():
                     # Encode images to latents (convert to VAE's dtype)
                     latents = vae.encode(pixel_values.to(vae.dtype)).latent_dist.sample()
@@ -222,7 +259,6 @@ def train(
                         # SDXL uses pooled embeddings as added_cond_kwargs
                         added_cond_kwargs = {"text_embeds": pooled_embeds}
                         # Add time_ids (original size, crops, target size)
-                        # For now, use default values for 1024x1024
                         time_ids = torch.tensor(
                             [[1024, 1024, 0, 0, 1024, 1024]], device=device
                         ).repeat(latents.shape[0], 1)
@@ -237,6 +273,8 @@ def train(
                         )
                         added_cond_kwargs = None
 
+            # Perform diffusion training step (common for both cached and non-cached)
+            if use_cached_data or use_real_diffusion:
                 # Sample random timesteps
                 timesteps = torch.randint(
                     0,
@@ -266,6 +304,7 @@ def train(
             else:
                 # Dummy mode for testing without VAE
                 # Simple MSE loss on model output
+                pixel_values = batch["pixel_values"]
                 dummy_target = torch.zeros(
                     config.batch_size, 4, config.image_size // 8, config.image_size // 8
                 ).to(device=device, dtype=model_dtype)
@@ -448,12 +487,23 @@ def save_checkpoint(
 
             # Extract LoRA weights and alpha values from all models
             lora_state = extract_lora_state_dict(model)
+            unet_keys = len(lora_state)
+
             if text_encoder_1 is not None:
                 te1_state = extract_lora_state_dict(text_encoder_1)
                 lora_state.update(te1_state)
+                print(f"  Including {len(te1_state)} text_encoder_1 LoRA tensors")
+            else:
+                print("  Skipping text_encoder_1 (not loaded)")
+
             if text_encoder_2 is not None:
                 te2_state = extract_lora_state_dict(text_encoder_2)
                 lora_state.update(te2_state)
+                print(f"  Including {len(te2_state)} text_encoder_2 LoRA tensors")
+            else:
+                print("  Skipping text_encoder_2 (not loaded)")
+
+            print(f"  Exporting {unet_keys} UNet LoRA tensors")
 
             if lora_state:
                 # Convert to ComfyUI format

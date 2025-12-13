@@ -7,8 +7,9 @@ from pathlib import Path
 import torch
 
 from .config import TrainingConfig
-from .data import build_dataloader
+from .data import build_cached_dataloader, build_dataloader
 from .logging import create_run_dirs, init_tensorboard, log_hparams, write_config_yaml
+from .preprocess import preprocess_dataset
 from .train_loop import load_checkpoint, train
 from .utils import set_seed
 
@@ -88,6 +89,18 @@ def parse_args() -> argparse.Namespace:
 
     # Data arguments
     data_group = parser.add_argument_group("data arguments")
+    data_group.add_argument(
+        "--use-cached-data",
+        action="store_true",
+        default=True,
+        help="Use pre-cached latents/embeddings (default: True, saves VRAM)",
+    )
+    data_group.add_argument(
+        "--no-cached-data",
+        action="store_false",
+        dest="use_cached_data",
+        help="Disable caching and encode on-the-fly (uses more VRAM)",
+    )
     data_group.add_argument(
         "--image_size",
         type=int,
@@ -266,16 +279,53 @@ def main() -> None:
     writer = init_tensorboard(dirs["tb"])
     log_hparams(writer, config)
 
+    # Determine cache directory
+    cache_dir = dirs["root"] / "cache"
+
     # Build dataloader
-    print(f"\nLoading training data from: {config.train_data}")
-    dataloader = build_dataloader(
-        data_dir=config.train_data,
-        batch_size=config.batch_size,
-        image_size=config.image_size,
-        num_workers=config.num_workers,
-    )
-    print(f"Dataset size: {len(dataloader.dataset)} images")
-    print(f"Batches per epoch: {len(dataloader)}")
+    if args.use_cached_data:
+        # Check if cache exists, create if needed
+        if not (cache_dir / "metadata.pt").exists():
+            print("\nCache not found. Preprocessing dataset...")
+            print("This is a one-time operation that will save significant VRAM during training.")
+
+            # Determine dtype for preprocessing
+            if config.mixed_precision == "fp16":
+                dtype = torch.float16
+            elif config.mixed_precision == "bf16":
+                dtype = torch.bfloat16
+            else:
+                dtype = torch.float32
+
+            preprocess_dataset(
+                train_data=config.train_data,
+                cache_dir=cache_dir,
+                checkpoint=config.checkpoint,
+                image_size=config.image_size,
+                device=device,
+                dtype=dtype,
+                batch_size=4,  # Use batch size 4 for preprocessing
+            )
+            print("\n✓ Preprocessing complete!\n")
+
+        print(f"\nLoading cached data from: {cache_dir}")
+        dataloader = build_cached_dataloader(
+            cache_dir=cache_dir,
+            batch_size=config.batch_size,
+            num_workers=config.num_workers,
+        )
+        print(f"Dataset size: {len(dataloader.dataset)} samples")
+        print(f"Batches per epoch: {len(dataloader)}")
+    else:
+        print(f"\nLoading training data from: {config.train_data}")
+        dataloader = build_dataloader(
+            data_dir=config.train_data,
+            batch_size=config.batch_size,
+            image_size=config.image_size,
+            num_workers=config.num_workers,
+        )
+        print(f"Dataset size: {len(dataloader.dataset)} images")
+        print(f"Batches per epoch: {len(dataloader)}")
 
     # Determine dtype based on mixed precision setting
     if config.mixed_precision == "fp16":
@@ -300,27 +350,41 @@ def main() -> None:
         lora_alpha=config.lora_alpha,
     )
 
-    print("\nLoading VAE...")
-    vae = load_vae(config.checkpoint, device=device, dtype=dtype)
+    # Only load VAE and text encoders if not using cached data
+    if args.use_cached_data:
+        print("\nUsing cached embeddings - skipping VAE and text encoder loading")
+        vae = None
+        text_encoder_1 = None
+        text_encoder_2 = None
+        tokenizer_1 = None
+        tokenizer_2 = None
+    else:
+        print("\nLoading VAE...")
+        vae = load_vae(config.checkpoint, device=device, dtype=dtype)
 
-    print("Loading text encoders...")
-    text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
-        config.checkpoint,
-        device=device,
-        dtype=dtype,
-        lora_rank=config.lora_rank,
-        lora_alpha=config.lora_alpha,
-    )
+        print("Loading text encoders...")
+        text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
+            config.checkpoint,
+            device=device,
+            dtype=dtype,
+            lora_rank=config.lora_rank,
+            lora_alpha=config.lora_alpha,
+        )
 
-    # Collect LoRA parameters from all models
+    # Collect LoRA parameters - UNet only when using cached data
     trainable_params = list(select_lora_params(model))
-    trainable_params.extend(select_lora_params(text_encoder_1))
-    trainable_params.extend(select_lora_params(text_encoder_2))
+
+    if not args.use_cached_data and text_encoder_1 is not None and text_encoder_2 is not None:
+        trainable_params.extend(select_lora_params(text_encoder_1))
+        trainable_params.extend(select_lora_params(text_encoder_2))
+        te1_params = sum(p.numel() for p in select_lora_params(text_encoder_1))
+        te2_params = sum(p.numel() for p in select_lora_params(text_encoder_2))
+    else:
+        te1_params = 0
+        te2_params = 0
 
     num_params = sum(p.numel() for p in trainable_params)
     unet_params = sum(p.numel() for p in select_lora_params(model))
-    te1_params = sum(p.numel() for p in select_lora_params(text_encoder_1))
-    te2_params = sum(p.numel() for p in select_lora_params(text_encoder_2))
     print(f"Trainable LoRA parameters: {num_params:,}")
     print(f"  UNet: {unet_params:,}, TE1: {te1_params:,}, TE2: {te2_params:,}")
 

@@ -389,12 +389,17 @@ def load_text_encoders(
             subfolder="tokenizer_2" if "/" in base_model else None,
         )
 
-    text_encoder_1 = inject_lora_into_text_encoder(
-        text_encoder_1, rank=lora_rank, alpha=lora_alpha
-    ).to(device)
-    text_encoder_2 = inject_lora_into_text_encoder(
-        text_encoder_2, rank=lora_rank, alpha=lora_alpha
-    ).to(device)
+    # Only inject LoRA if rank is specified
+    if lora_rank is not None:
+        text_encoder_1 = inject_lora_into_text_encoder(
+            text_encoder_1, rank=lora_rank, alpha=lora_alpha
+        ).to(device)
+        text_encoder_2 = inject_lora_into_text_encoder(
+            text_encoder_2, rank=lora_rank, alpha=lora_alpha
+        ).to(device)
+    else:
+        text_encoder_1 = text_encoder_1.to(device)
+        text_encoder_2 = text_encoder_2.to(device)
 
     # Freeze text encoders
     text_encoder_1.requires_grad_(False)

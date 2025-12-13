@@ -321,77 +321,100 @@ def run_validation_samples(
 
     print(f"\nGenerating {len(prompts)} validation samples...")
 
-    # Build scheduler
-    scheduler = build_noise_scheduler(
-        config.scheduler, config.sampler_steps, sampler_name=config.sampler
-    )
+    # Temporarily move VAE and text encoders to device if they're on CPU
+    # (This happens when using cached data - models are kept on CPU to save VRAM)
+    vae_original_device = next(vae.parameters()).device
+    te1_original_device = next(text_encoder_1.parameters()).device
+    te2_original_device = next(text_encoder_2.parameters()).device
 
-    # Encode prompts
-    prompt_embeds, pooled_prompt_embeds = encode_prompts_for_sampling(
-        prompts,
-        text_encoder_1,
-        text_encoder_2,
-        tokenizer_1,
-        tokenizer_2,
-        device,
-        clip_skip=config.sample_clip_skip,
-    )
+    need_to_move = vae_original_device.type == "cpu"
+    if need_to_move:
+        print("Moving VAE and text encoders to GPU for sampling...")
+        vae = vae.to(device)
+        text_encoder_1 = text_encoder_1.to(device)
+        text_encoder_2 = text_encoder_2.to(device)
 
-    # Encode negative prompts (empty string)
-    negative_prompt_embeds, pooled_negative_prompt_embeds = encode_prompts_for_sampling(
-        negative_prompts,
-        text_encoder_1,
-        text_encoder_2,
-        tokenizer_1,
-        tokenizer_2,
-        device,
-        clip_skip=config.sample_clip_skip,
-    )
+    try:
+        # Build scheduler
+        scheduler = build_noise_scheduler(
+            config.scheduler, config.sampler_steps, sampler_name=config.sampler
+        )
 
-    # Set model to eval mode
-    unet.eval()
-    vae.eval()
+        # Encode prompts
+        prompt_embeds, pooled_prompt_embeds = encode_prompts_for_sampling(
+            prompts,
+            text_encoder_1,
+            text_encoder_2,
+            tokenizer_1,
+            tokenizer_2,
+            device,
+            clip_skip=config.sample_clip_skip,
+        )
 
-    # Determine dtype from model
-    dtype = next(unet.parameters()).dtype
+        # Encode negative prompts (empty string)
+        negative_prompt_embeds, pooled_negative_prompt_embeds = encode_prompts_for_sampling(
+            negative_prompts,
+            text_encoder_1,
+            text_encoder_2,
+            tokenizer_1,
+            tokenizer_2,
+            device,
+            clip_skip=config.sample_clip_skip,
+        )
 
-    # Sample
-    latents = sample_with_cfg(
-        unet=unet,
-        scheduler=scheduler,
-        prompt_embeds=prompt_embeds,
-        negative_prompt_embeds=negative_prompt_embeds,
-        pooled_prompt_embeds=pooled_prompt_embeds,
-        pooled_negative_prompt_embeds=pooled_negative_prompt_embeds,
-        num_inference_steps=config.sampler_steps,
-        guidance_scale=config.cfg,
-        height=config.image_size,
-        width=config.image_size,
-        device=device,
-        dtype=dtype,
-        seeds=seeds,
-        sampler_name=config.sampler,
-    )
+        # Set model to eval mode
+        unet.eval()
+        vae.eval()
 
-    # Decode to images
-    images = decode_latents(vae, latents)
+        # Determine dtype from model
+        dtype = next(unet.parameters()).dtype
 
-    # Create grid
-    grid = make_grid(images, nrow=config.samples_per_prompt, padding=2, normalize=False)
+        # Sample
+        latents = sample_with_cfg(
+            unet=unet,
+            scheduler=scheduler,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            pooled_prompt_embeds=pooled_prompt_embeds,
+            pooled_negative_prompt_embeds=pooled_negative_prompt_embeds,
+            num_inference_steps=config.sampler_steps,
+            guidance_scale=config.cfg,
+            height=config.image_size,
+            width=config.image_size,
+            device=device,
+            dtype=dtype,
+            seeds=seeds,
+            sampler_name=config.sampler,
+        )
 
-    # Save to file
-    samples_dir.mkdir(parents=True, exist_ok=True)
-    save_path = samples_dir / f"step_{global_step:06d}.png"
+        # Decode to images
+        images = decode_latents(vae, latents)
 
-    # Convert to PIL and save
-    grid_np = grid.to(torch.float32).cpu().permute(1, 2, 0).numpy()
-    grid_np = (grid_np * 255).astype("uint8")
-    Image.fromarray(grid_np).save(save_path)
+        # Create grid
+        grid = make_grid(images, nrow=config.samples_per_prompt, padding=2, normalize=False)
 
-    # Log to TensorBoard
-    writer.add_image("samples", grid, global_step)
+        # Save to file
+        samples_dir.mkdir(parents=True, exist_ok=True)
+        save_path = samples_dir / f"step_{global_step:06d}.png"
 
-    print(f"Saved validation samples to {save_path}")
+        # Convert to PIL and save
+        grid_np = grid.to(torch.float32).cpu().permute(1, 2, 0).numpy()
+        grid_np = (grid_np * 255).astype("uint8")
+        Image.fromarray(grid_np).save(save_path)
 
-    # Return to train mode
-    unet.train()
+        # Log to TensorBoard
+        writer.add_image("samples", grid, global_step)
+
+        print(f"Saved validation samples to {save_path}")
+
+        # Return to train mode
+        unet.train()
+
+    finally:
+        # Move models back to original device (CPU) if we moved them
+        if need_to_move:
+            print("Moving VAE and text encoders back to CPU...")
+            vae = vae.to(vae_original_device)
+            text_encoder_1 = text_encoder_1.to(te1_original_device)
+            text_encoder_2 = text_encoder_2.to(te2_original_device)
+            torch.cuda.empty_cache()

@@ -185,6 +185,12 @@ def parse_args() -> argparse.Namespace:
     # Misc arguments
     misc_group = parser.add_argument_group("misc arguments")
     misc_group.add_argument(
+        "--gradient_checkpointing",
+        action="store_true",
+        default=False,
+        help="Enable gradient checkpointing to save VRAM (slower but uses ~15-20GB less)",
+    )
+    misc_group.add_argument(
         "--device",
         type=str,
         default=None,
@@ -350,14 +356,26 @@ def main() -> None:
         lora_alpha=config.lora_alpha,
     )
 
-    # Only load VAE and text encoders if not using cached data
+    # Enable gradient checkpointing if requested
+    if args.gradient_checkpointing:
+        model.enable_gradient_checkpointing()
+        print("Gradient checkpointing enabled (saves VRAM, ~20% slower)")
+
+    # Load VAE and text encoders based on caching mode
     if args.use_cached_data:
-        print("\nUsing cached embeddings - skipping VAE and text encoder loading")
-        vae = None
-        text_encoder_1 = None
-        text_encoder_2 = None
-        tokenizer_1 = None
-        tokenizer_2 = None
+        print("\nUsing cached embeddings for training")
+        print("Loading VAE and text encoders for sampling only (kept on CPU to save VRAM)...")
+        vae = load_vae(config.checkpoint, device="cpu", dtype=dtype)
+        vae.eval()
+
+        # Load text encoders without LoRA (just for sampling)
+        text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
+            config.checkpoint,
+            device="cpu",
+            dtype=dtype,
+            lora_rank=None,  # No LoRA needed for sampling
+            lora_alpha=None,
+        )
     else:
         print("\nLoading VAE...")
         vae = load_vae(config.checkpoint, device=device, dtype=dtype)

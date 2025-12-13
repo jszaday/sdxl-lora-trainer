@@ -312,9 +312,17 @@ def main() -> None:
         lora_alpha=config.lora_alpha,
     )
 
+    # Collect LoRA parameters from all models
     trainable_params = list(select_lora_params(model))
+    trainable_params.extend(select_lora_params(text_encoder_1))
+    trainable_params.extend(select_lora_params(text_encoder_2))
+
     num_params = sum(p.numel() for p in trainable_params)
+    unet_params = sum(p.numel() for p in select_lora_params(model))
+    te1_params = sum(p.numel() for p in select_lora_params(text_encoder_1))
+    te2_params = sum(p.numel() for p in select_lora_params(text_encoder_2))
     print(f"Trainable LoRA parameters: {num_params:,}")
+    print(f"  UNet: {unet_params:,}, TE1: {te1_params:,}, TE2: {te2_params:,}")
 
     # Create optimizer
     optimizer = build_optimizer(
@@ -333,6 +341,8 @@ def main() -> None:
             model=model,
             optimizer=optimizer,
             device=device,
+            text_encoder_1=text_encoder_1,
+            text_encoder_2=text_encoder_2,
         )
         print(f"  Loaded global_step={resume_step}")
 

@@ -326,6 +326,8 @@ def train(
                         checkpoint_dir=dirs["checkpoints"],
                         lora_rank=config.lora_rank,
                         lora_alpha=config.lora_alpha,
+                        text_encoder_1=text_encoder_1,
+                        text_encoder_2=text_encoder_2,
                     )
                     checkpoint_duration = time.perf_counter() - checkpoint_start
                     writer.add_scalar("perf/checkpoint_time_sec", checkpoint_duration, global_step)
@@ -372,6 +374,8 @@ def train(
         skip_step_save=already_saved,
         lora_rank=config.lora_rank,
         lora_alpha=config.lora_alpha,
+        text_encoder_1=text_encoder_1,
+        text_encoder_2=text_encoder_2,
     )
     checkpoint_duration = time.perf_counter() - checkpoint_start
     writer.add_scalar("perf/checkpoint_time_sec", checkpoint_duration, global_step)
@@ -389,16 +393,22 @@ def save_checkpoint(
     skip_step_save: bool = False,
     lora_rank: int | None = None,
     lora_alpha: float | None = None,
+    text_encoder_1: nn.Module | None = None,
+    text_encoder_2: nn.Module | None = None,
 ) -> None:
     """Save a training checkpoint.
 
     Args:
-        model: Model to save
+        model: UNet model to save
         optimizer: Optimizer to save
         global_step: Current training step
         checkpoint_dir: Directory to save checkpoints
         is_final: Whether this is the final checkpoint
         skip_step_save: Skip writing the step checkpoint if it already exists
+        lora_rank: LoRA rank for metadata
+        lora_alpha: LoRA alpha for metadata
+        text_encoder_1: Optional text encoder 1 with LoRA
+        text_encoder_2: Optional text encoder 2 with LoRA
     """
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -408,6 +418,12 @@ def save_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
         "global_step": global_step,
     }
+
+    # Include text encoder state dicts if provided
+    if text_encoder_1 is not None:
+        checkpoint["text_encoder_1_state_dict"] = text_encoder_1.state_dict()
+    if text_encoder_2 is not None:
+        checkpoint["text_encoder_2_state_dict"] = text_encoder_2.state_dict()
 
     # Always save full checkpoints as .pt for training resumes
     checkpoint_path = checkpoint_dir / f"step_{global_step:06d}.pt"
@@ -430,8 +446,14 @@ def save_checkpoint(
 
             from .model import build_lora_metadata, extract_lora_state_dict, infer_lora_hparams
 
-            # Extract LoRA weights and alpha values
+            # Extract LoRA weights and alpha values from all models
             lora_state = extract_lora_state_dict(model)
+            if text_encoder_1 is not None:
+                te1_state = extract_lora_state_dict(text_encoder_1)
+                lora_state.update(te1_state)
+            if text_encoder_2 is not None:
+                te2_state = extract_lora_state_dict(text_encoder_2)
+                lora_state.update(te2_state)
 
             if lora_state:
                 # Convert to ComfyUI format
@@ -457,8 +479,18 @@ def load_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer | None,
     device: str,
+    text_encoder_1: nn.Module | None = None,
+    text_encoder_2: nn.Module | None = None,
 ) -> int:
     """Load model/optimizer state from a checkpoint file.
+
+    Args:
+        checkpoint_path: Path to checkpoint file
+        model: UNet model to load weights into
+        optimizer: Optional optimizer to load state into
+        device: Device for loading
+        text_encoder_1: Optional text encoder 1 to load weights into
+        text_encoder_2: Optional text encoder 2 to load weights into
 
     Returns:
         global_step stored in the checkpoint (0 if missing)
@@ -467,6 +499,12 @@ def load_checkpoint(
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
     model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Load text encoder state if available
+    if text_encoder_1 is not None and "text_encoder_1_state_dict" in checkpoint:
+        text_encoder_1.load_state_dict(checkpoint["text_encoder_1_state_dict"])
+    if text_encoder_2 is not None and "text_encoder_2_state_dict" in checkpoint:
+        text_encoder_2.load_state_dict(checkpoint["text_encoder_2_state_dict"])
 
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])

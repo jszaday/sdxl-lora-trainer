@@ -1,5 +1,6 @@
 """Core training loop with progress tracking and checkpointing."""
 
+import time
 from pathlib import Path
 
 import torch
@@ -11,6 +12,7 @@ from tqdm import tqdm
 
 from lora_converter.converter import convert_lora_state
 
+from .logging import log_perf_metrics
 from .sampling import run_validation_samples
 
 
@@ -132,6 +134,24 @@ def train(
             text_encoder_2 = text_encoder_2.to(device)
             text_encoder_2.eval()
 
+    use_cuda_device = device.startswith("cuda") and torch.cuda.is_available()
+    copy_stream = torch.cuda.Stream(device=device) if use_cuda_device else None
+
+    def _async_to_device(batch):
+        if copy_stream is None:
+            return {
+                "pixel_values": batch["pixel_values"].to(device),
+                "caption": batch["caption"],
+            }
+        result = {"caption": batch["caption"]}
+        with torch.cuda.stream(copy_stream):
+            result["pixel_values"] = batch["pixel_values"].to(device, non_blocking=True)
+        return result
+
+    def _wait_for_batch():
+        if copy_stream is not None:
+            torch.cuda.current_stream().wait_stream(copy_stream)
+
     global_step = start_step
     current_epoch = 0
     last_checkpoint_step: int | None = None
@@ -160,11 +180,26 @@ def train(
             device=device,
         )
 
+    step_start_time = time.perf_counter()
     while global_step < config.steps:
         current_epoch += 1
+        data_iter = iter(dataloader)
+        try:
+            prefetched = _async_to_device(next(data_iter))
+        except StopIteration:
+            break
 
-        for batch_idx, batch in enumerate(dataloader):
-            pixel_values = batch["pixel_values"].to(device)
+        batch_idx = 0
+        while global_step < config.steps and prefetched is not None:
+            _wait_for_batch()
+            batch = prefetched
+            try:
+                raw_next = next(data_iter)
+            except StopIteration:
+                raw_next = None
+            prefetched = _async_to_device(raw_next) if raw_next is not None else None
+
+            pixel_values = batch["pixel_values"]
             captions = batch["caption"]
 
             if use_real_diffusion:
@@ -263,6 +298,15 @@ def train(
                 writer.add_scalar("train/lr", effective_lr, global_step)
                 writer.add_scalar("train/epoch", current_epoch, global_step)
 
+                step_duration = time.perf_counter() - step_start_time
+                log_perf_metrics(
+                    writer=writer,
+                    global_step=global_step,
+                    step_time=step_duration,
+                    effective_batch_size=config.effective_batch_size,
+                    device=device,
+                )
+
                 # Update progress bar
                 pbar.update(1)
                 pbar.set_postfix(
@@ -274,12 +318,17 @@ def train(
 
                 # Save checkpoint periodically
                 if global_step % config.sample_every == 0:
+                    checkpoint_start = time.perf_counter()
                     save_checkpoint(
                         model=model,
                         optimizer=optimizer,
                         global_step=global_step,
                         checkpoint_dir=dirs["checkpoints"],
+                        lora_rank=config.lora_rank,
+                        lora_alpha=config.lora_alpha,
                     )
+                    checkpoint_duration = time.perf_counter() - checkpoint_start
+                    writer.add_scalar("perf/checkpoint_time_sec", checkpoint_duration, global_step)
                     last_checkpoint_step = global_step
 
                     # Run validation sampling
@@ -302,12 +351,18 @@ def train(
                 if global_step >= config.steps:
                     break
 
+                # Reset step timer after logging/checkpointing work
+                step_start_time = time.perf_counter()
+
+            batch_idx += 1
+
         # Break outer loop if we've finished
         if global_step >= config.steps:
             break
 
     # Final checkpoint
     already_saved = last_checkpoint_step == global_step
+    checkpoint_start = time.perf_counter()
     save_checkpoint(
         model=model,
         optimizer=optimizer,
@@ -315,7 +370,11 @@ def train(
         checkpoint_dir=dirs["checkpoints"],
         is_final=True,
         skip_step_save=already_saved,
+        lora_rank=config.lora_rank,
+        lora_alpha=config.lora_alpha,
     )
+    checkpoint_duration = time.perf_counter() - checkpoint_start
+    writer.add_scalar("perf/checkpoint_time_sec", checkpoint_duration, global_step)
 
     pbar.close()
     print(f"\nTraining complete! Final step: {global_step}")
@@ -328,6 +387,8 @@ def save_checkpoint(
     checkpoint_dir: Path,
     is_final: bool = False,
     skip_step_save: bool = False,
+    lora_rank: int | None = None,
+    lora_alpha: float | None = None,
 ) -> None:
     """Save a training checkpoint.
 
@@ -367,13 +428,24 @@ def save_checkpoint(
         try:
             from safetensors.torch import save_file
 
-            lora_state = {
-                k: v.detach().cpu() for k, v in model.state_dict().items() if ".lora_" in k
-            }
+            from .model import build_lora_metadata, extract_lora_state_dict, infer_lora_hparams
+
+            # Extract LoRA weights and alpha values
+            lora_state = extract_lora_state_dict(model)
+
             if lora_state:
+                # Convert to ComfyUI format
                 converted = convert_lora_state(lora_state)
-                save_file(converted, str(lora_path))
-                print(f"Saved LoRA weights: {lora_path}")
+
+                # Build metadata
+                inferred_rank, inferred_alpha = infer_lora_hparams(model)
+                rank = lora_rank if lora_rank is not None else inferred_rank
+                alpha = lora_alpha if lora_alpha is not None else inferred_alpha
+                metadata = build_lora_metadata(rank, alpha)
+
+                # Save to file
+                save_file(converted, str(lora_path), metadata=metadata)
+                print(f"Saved LoRA weights: {lora_path} ({len(converted)} tensors)")
             else:
                 print("Warning: No LoRA weights found to export.")
         except Exception as e:

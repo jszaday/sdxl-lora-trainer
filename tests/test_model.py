@@ -3,7 +3,12 @@
 import torch
 import torch.nn as nn
 
-from lora_trainer.model import LoRALayer, inject_lora_into_unet, select_lora_params
+from lora_trainer.model import (
+    LoRALayer,
+    inject_lora_into_unet,
+    load_lora_weights,
+    select_lora_params,
+)
 
 
 class DummyAttentionBlock(nn.Module):
@@ -187,3 +192,225 @@ def test_lora_params_are_trainable():
     trainable_param_ids = {id(p) for p in trainable_params}
     for param in lora_params:
         assert id(param) in trainable_param_ids
+
+
+def test_load_lora_weights_applies_to_unet_and_text_encoders(tmp_path):
+    """Ensure Comfy-style keys load into UNet and both text encoders."""
+
+    class DummyAttn(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.to_q = LoRALayer(nn.Linear(2, 2))
+
+    class DummyBlock(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = DummyAttn()
+
+    class DummyUNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = DummyBlock()
+
+    class DummySelfAttn(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = LoRALayer(nn.Linear(2, 2))
+
+    class DummyTE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = DummySelfAttn()
+
+    unet = DummyUNet()
+    te1 = DummyTE()
+    te2 = DummyTE()
+
+    state = {
+        "lora_unet_block_attn_to_q.lora_down.weight": torch.ones_like(
+            unet.block.attn.to_q.lora_down.weight
+        ),
+        "lora_unet_block_attn_to_q.lora_up.weight": torch.full_like(
+            unet.block.attn.to_q.lora_up.weight, 2.0
+        ),
+        "lora_te1_self_attn_q_proj.lora_down.weight": torch.full_like(
+            te1.self_attn.q_proj.lora_down.weight, 3.0
+        ),
+        "lora_te1_self_attn_q_proj.lora_up.weight": torch.full_like(
+            te1.self_attn.q_proj.lora_up.weight, 4.0
+        ),
+        "lora_te2_self_attn_q_proj.lora_down.weight": torch.full_like(
+            te2.self_attn.q_proj.lora_down.weight, 5.0
+        ),
+        "lora_te2_self_attn_q_proj.lora_up.weight": torch.full_like(
+            te2.self_attn.q_proj.lora_up.weight, 6.0
+        ),
+    }
+
+    lora_path = tmp_path / "dummy_lora.pt"
+    torch.save(state, lora_path)
+
+    load_lora_weights(lora_path, unet=unet, text_encoder_1=te1, text_encoder_2=te2)
+
+    assert torch.allclose(
+        unet.block.attn.to_q.lora_down.weight,
+        state["lora_unet_block_attn_to_q.lora_down.weight"],
+    )
+    assert torch.allclose(
+        unet.block.attn.to_q.lora_up.weight,
+        state["lora_unet_block_attn_to_q.lora_up.weight"],
+    )
+    assert torch.allclose(
+        te1.self_attn.q_proj.lora_down.weight,
+        state["lora_te1_self_attn_q_proj.lora_down.weight"],
+    )
+    assert torch.allclose(
+        te1.self_attn.q_proj.lora_up.weight,
+        state["lora_te1_self_attn_q_proj.lora_up.weight"],
+    )
+    assert torch.allclose(
+        te2.self_attn.q_proj.lora_down.weight,
+        state["lora_te2_self_attn_q_proj.lora_down.weight"],
+    )
+    assert torch.allclose(
+        te2.self_attn.q_proj.lora_up.weight,
+        state["lora_te2_self_attn_q_proj.lora_up.weight"],
+    )
+
+
+def test_lora_round_trip_export_and_import(tmp_path):
+    """Test complete round-trip: extract -> convert -> save -> load -> verify."""
+    from lora_converter.converter import convert_lora_state
+    from lora_trainer.model import LoRAConv2d, extract_lora_state_dict
+    from safetensors.torch import save_file
+
+    # Create models with LoRA (alpha=32.0)
+    class DummyAttn(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.to_q = LoRALayer(nn.Linear(64, 64), rank=8, alpha=32.0)
+            self.to_k = LoRALayer(nn.Linear(64, 64), rank=8, alpha=32.0)
+
+    class DummyBlock(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = DummyAttn()
+            self.conv1 = LoRAConv2d(
+                nn.Conv2d(3, 16, 3, padding=1), rank=8, alpha=32.0
+            )
+
+    class DummyUNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = DummyBlock()
+
+    class DummySelfAttn(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q_proj = LoRALayer(nn.Linear(64, 64), rank=8, alpha=32.0)
+
+    class DummyTE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.self_attn = DummySelfAttn()
+
+    # Step 1: Create original models with alpha=32.0
+    unet1 = DummyUNet()
+    te1_1 = DummyTE()
+
+    # Step 2: Extract LoRA state (should include alphas)
+    unet_lora_state = extract_lora_state_dict(unet1)
+    te1_lora_state = extract_lora_state_dict(te1_1)
+
+    # Verify extracted state has alphas
+    assert "block.attn.to_q.alpha" in unet_lora_state
+    assert "block.attn.to_k.alpha" in unet_lora_state
+    assert "block.conv1.alpha" in unet_lora_state
+    assert "self_attn.q_proj.alpha" in te1_lora_state
+
+    # Verify alpha values
+    assert unet_lora_state["block.attn.to_q.alpha"].item() == 32.0
+    assert te1_lora_state["self_attn.q_proj.alpha"].item() == 32.0
+
+    # Step 3: Convert to ComfyUI format
+    # Note: We need to manually handle text encoder state since the converter
+    # expects "text_model" in the key to identify TE keys. For UNet, we just
+    # pass through as-is.
+    converted = convert_lora_state(unet_lora_state)
+
+    # For text encoder, manually convert with te1 prefix
+    for key, tensor in te1_lora_state.items():
+        # Convert self_attn.q_proj.lora_down.weight -> lora_te1_self_attn_q_proj.lora_down.weight
+        if ".lora_down.weight" in key:
+            base = key[: -len(".lora_down.weight")]
+            suffix = "lora_down.weight"
+        elif ".lora_up.weight" in key:
+            base = key[: -len(".lora_up.weight")]
+            suffix = "lora_up.weight"
+        elif key.endswith(".alpha"):
+            base = key[: -len(".alpha")]
+            suffix = "alpha"
+        else:
+            continue
+        comfy_key = f"lora_te1_{base.replace('.', '_')}.{suffix}"
+        converted[comfy_key] = tensor.detach().cpu()
+
+    # Verify keys are in ComfyUI format
+    assert "lora_unet_block_attn_to_q.lora_down.weight" in converted
+    assert "lora_unet_block_attn_to_q.lora_up.weight" in converted
+    assert "lora_unet_block_attn_to_q.alpha" in converted
+    assert "lora_unet_block_conv1.lora_down.weight" in converted
+    assert "lora_te1_self_attn_q_proj.alpha" in converted
+
+    # Step 4: Save to safetensors
+    lora_path = tmp_path / "test_lora.safetensors"
+    metadata = {"network_dim": "8", "network_alpha": "32.0"}
+    save_file(converted, str(lora_path), metadata=metadata)
+
+    # Step 5: Create fresh models with different alpha (16.0)
+    unet2 = DummyUNet()
+    te1_2 = DummyTE()
+
+    # Manually set alpha to 16.0 to verify it gets overwritten
+    unet2.block.attn.to_q.alpha = 16.0
+    unet2.block.attn.to_k.alpha = 16.0
+    unet2.block.conv1.alpha = 16.0
+    te1_2.self_attn.q_proj.alpha = 16.0
+
+    # Step 6: Load LoRA weights (should update alphas to 32.0)
+    load_lora_weights(lora_path, unet=unet2, text_encoder_1=te1_2)
+
+    # Step 7: Verify weights match
+    assert torch.allclose(
+        unet2.block.attn.to_q.lora_down.weight,
+        unet1.block.attn.to_q.lora_down.weight,
+    )
+    assert torch.allclose(
+        unet2.block.attn.to_q.lora_up.weight, unet1.block.attn.to_q.lora_up.weight
+    )
+    assert torch.allclose(
+        unet2.block.conv1.lora_down.weight, unet1.block.conv1.lora_down.weight
+    )
+    assert torch.allclose(
+        te1_2.self_attn.q_proj.lora_down.weight,
+        te1_1.self_attn.q_proj.lora_down.weight,
+    )
+
+    # Step 8: Verify alphas were updated to 32.0
+    assert unet2.block.attn.to_q.alpha == 32.0
+    assert unet2.block.attn.to_k.alpha == 32.0
+    assert unet2.block.conv1.alpha == 32.0
+    assert te1_2.self_attn.q_proj.alpha == 32.0
+
+    # Step 9: Verify all LoRA modules have correct alpha
+    for name, module in unet2.named_modules():
+        if isinstance(module, (LoRALayer, LoRAConv2d)):
+            assert (
+                module.alpha == 32.0
+            ), f"Module {name} has alpha={module.alpha}, expected 32.0"
+
+    for name, module in te1_2.named_modules():
+        if isinstance(module, LoRALayer):
+            assert (
+                module.alpha == 32.0
+            ), f"Module {name} has alpha={module.alpha}, expected 32.0"

@@ -222,24 +222,32 @@ def main() -> None:
         lora_alpha=effective_alpha,
     )
 
-    if args.lora_checkpoint is not None:
-        print(f"Loading LoRA weights from: {args.lora_checkpoint}")
-        try:
-            missing = unet.load_state_dict(lora_state, strict=False)
-            print(f"Applied {len(lora_state)} LoRA tensors")
-            if missing.missing_keys:
-                print(f"Warning: missing keys when loading LoRA: {missing.missing_keys}")
-        except Exception as e:
-            print(f"Error loading LoRA weights: {e}")
-            sys.exit(1)
-
     print("Loading VAE...")
     vae = load_vae(args.checkpoint, device=device, dtype=dtype)
 
     print("Loading text encoders...")
     text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
-        args.checkpoint, device=device, dtype=dtype
+        args.checkpoint,
+        device=device,
+        dtype=dtype,
+        lora_rank=effective_rank,
+        lora_alpha=effective_alpha,
     )
+
+    if args.lora_checkpoint is not None:
+        print(f"Loading LoRA weights from: {args.lora_checkpoint}")
+        try:
+            from lora_trainer.model import load_lora_weights
+
+            load_lora_weights(
+                args.lora_checkpoint,
+                unet=unet,
+                text_encoder_1=text_encoder_1,
+                text_encoder_2=text_encoder_2,
+            )
+        except Exception as e:
+            print(f"Error loading LoRA weights: {e}")
+            sys.exit(1)
 
     config_like = SimpleNamespace(
         scheduler=args.scheduler,

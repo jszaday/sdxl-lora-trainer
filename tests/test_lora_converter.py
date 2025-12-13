@@ -1,4 +1,5 @@
 import torch
+from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 from lora_converter.converter import convert_checkpoint, convert_lora_state
@@ -38,6 +39,10 @@ def test_convert_checkpoint_writes_safetensors(tmp_path):
         "lora_unet_up_blocks_1_attn_to_k.lora_up.weight",
     }
     assert tensors["lora_unet_up_blocks_1_attn_to_k.lora_down.weight"].shape == (2, 2)
+    with safe_open(output_path, framework="pt", device="cpu") as f:
+        meta = f.metadata()
+    assert meta.get("format") == "pt"
+    assert meta.get("network_dim") == "2"
 
 
 def test_convert_safetensors_input(tmp_path):
@@ -57,3 +62,6 @@ def test_convert_safetensors_input(tmp_path):
         "lora_unet_mid_block_attn.lora_down.weight",
         "lora_unet_mid_block_attn.lora_up.weight",
     }
+    with safe_open(output_path, framework="pt", device="cpu") as f:
+        meta = f.metadata()
+    assert meta.get("format") == "pt"

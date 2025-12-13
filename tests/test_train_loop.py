@@ -118,6 +118,62 @@ def test_train_completes_requested_steps(temp_workspace, temp_data_dir):
         device="cpu",
     )
 
+
+class DummyWriter:
+    def __init__(self):
+        self.scalars = []
+
+    def add_scalar(self, tag, scalar_value, global_step):
+        self.scalars.append((tag, scalar_value, global_step))
+
+    def close(self):
+        pass
+
+
+def test_train_logs_perf_metrics(temp_workspace, temp_data_dir):
+    """Ensure perf metrics are logged during training."""
+    config = TrainingConfig(
+        checkpoint="dummy.safetensors",
+        train_data=temp_data_dir,
+        steps=2,
+        batch_size=2,
+        workspace=temp_workspace,
+        grad_accum=1,
+        image_size=512,
+        sample_every=10,  # avoid periodic checkpoints
+    )
+
+    dirs = create_run_dirs(config.workspace)
+    writer = DummyWriter()
+    model = DummyUNet(in_channels=4, out_channels=4)
+    optimizer = torch.optim.AdamW(select_lora_params_dummy(model), lr=1e-4)
+
+    # Simple dataloader matching dummy latent shape
+    pixel_values = torch.randn(8, 4, 64, 64)
+    dataset = TensorDataset(pixel_values)
+
+    def collate_fn(batch):
+        stacked = torch.stack([item[0] for item in batch])
+        return {"pixel_values": stacked, "caption": ["dummy"] * len(batch)}
+
+    dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn, drop_last=True)
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        config=config,
+        dirs=dirs,
+        writer=writer,
+        device="cpu",
+    )
+
+    tags = {tag for tag, _, _ in writer.scalars}
+    assert "perf/step_time_sec" in tags
+    assert "perf/images_per_sec" in tags
+    assert "perf/checkpoint_time_sec" in tags
+    writer.close()
+
     # Check that final checkpoint exists
     final_checkpoint = dirs["checkpoints"] / "final.pt"
     assert final_checkpoint.exists()

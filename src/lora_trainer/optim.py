@@ -30,12 +30,21 @@ def parse_optimizer_spec(spec: str) -> tuple[str, dict]:
 
 def build_optimizer(params, spec: str, base_lr: float) -> torch.optim.Optimizer:
     """Build optimizer from spec string."""
+    params = list(params)
+    if not params:
+        raise ValueError("No parameters provided to optimizer")
     name, kwargs = parse_optimizer_spec(spec)
 
     # Common default lr unless overridden
     kwargs.setdefault("lr", base_lr)
 
     if name == "adamw":
+        if "fused" not in kwargs:
+            try:
+                if any(p.device.type == "cuda" for p in params):
+                    kwargs["fused"] = True
+            except Exception:
+                pass
         return torch.optim.AdamW(params, **kwargs)
 
     if name == "adamw8bit":

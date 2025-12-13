@@ -33,19 +33,56 @@ def _load_state_dict(checkpoint_path: Path) -> dict[str, torch.Tensor]:
 
 
 def _convert_key(key: str) -> str:
-    """Turn a module path like 'down_blocks.0.to_q.lora_down.weight' into ComfyUI format."""
-    if LORA_MARKER not in key:
-        raise ValueError(f"Key does not look like a LoRA tensor: {key}")
-    if key.startswith("lora_unet_"):
+    """Turn a module path into ComfyUI format.
+
+    Examples:
+        'add_embedding.linear_1.lora_down.weight'
+            -> 'lora_unet_add_embedding_linear_1.lora_down.weight'
+        'add_embedding.linear_1.alpha'
+            -> 'lora_unet_add_embedding_linear_1.alpha'
+        'text_model.encoder.layers.0.mlp.fc1.lora_down.weight'
+            -> 'lora_te1_text_model_encoder_layers_0_mlp_fc1.lora_down.weight'
+    """
+    # Already in ComfyUI format
+    if key.startswith("lora_unet_") or key.startswith("lora_te1_") or key.startswith("lora_te2_"):
         return key
 
-    module_path, suffix = key.split(LORA_MARKER, 1)
+    # Determine if this is a text encoder key (contains text_model or encoder.layers)
+    is_te = "text_model" in key
+    prefix = "lora_te1" if is_te else "lora_unet"  # Default to TE1 for text encoder keys
+
+    # Handle both .lora_down.weight/.lora_up.weight and .alpha
+    if ".lora_down.weight" in key:
+        module_path = key[: -len(".lora_down.weight")]
+        suffix = "lora_down.weight"
+    elif ".lora_up.weight" in key:
+        module_path = key[: -len(".lora_up.weight")]
+        suffix = "lora_up.weight"
+    elif key.endswith(".alpha"):
+        module_path = key[: -len(".alpha")]
+        suffix = "alpha"
+    else:
+        # Fallback: check for generic .lora_ marker
+        if LORA_MARKER not in key:
+            raise ValueError(f"Key does not look like a LoRA tensor: {key}")
+        module_path, suffix = key.split(LORA_MARKER, 1)
+        suffix = f"lora_{suffix}"
+
+    # Convert dots to underscores in module path
     module_path = module_path.replace(".", "_")
-    return f"lora_unet_{module_path}.lora_{suffix}"
+
+    # Build ComfyUI key
+    return f"{prefix}_{module_path}.{suffix}"
 
 
 def convert_lora_state(lora_state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Convert raw LoRA tensors into ComfyUI key space."""
+    """Convert raw LoRA tensors into ComfyUI key space.
+
+    Handles:
+    - UNet LoRA weights (module.lora_down.weight, module.lora_up.weight)
+    - Text encoder LoRA weights
+    - Alpha values (module.alpha)
+    """
     converted: dict[str, torch.Tensor] = {}
     for key, tensor in lora_state.items():
         target = _convert_key(key)
@@ -66,5 +103,17 @@ def convert_checkpoint(input_path: Path, output_path: Path, *, overwrite: bool =
         raise ValueError(f"No LoRA tensors found in {input_path}")
 
     converted = convert_lora_state(lora_state)
-    save_file(converted, str(output_path))
+    # Infer rank from first lora_down tensor if possible
+    rank = None
+    for key, tensor in converted.items():
+        if key.endswith("lora_down.weight") and tensor.ndim >= 2:
+            rank = tensor.shape[0]
+            break
+    metadata = {
+        "format": "pt",
+        "network_dim": str(rank) if rank is not None else "",
+        "network_alpha": str(rank) if rank is not None else "",
+        "generator": "lora_trainer",
+    }
+    save_file(converted, str(output_path), metadata=metadata)
     return output_path

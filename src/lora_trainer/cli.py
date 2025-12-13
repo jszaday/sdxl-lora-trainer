@@ -8,7 +8,7 @@ import torch
 
 from .config import TrainingConfig
 from .data import build_dataloader
-from .logging import create_run_dirs, init_tensorboard, log_hparams
+from .logging import create_run_dirs, init_tensorboard, log_hparams, write_config_yaml
 from .train_loop import load_checkpoint, train
 from .utils import set_seed
 
@@ -259,6 +259,8 @@ def main() -> None:
     print(f"  - Checkpoints: {dirs['checkpoints']}")
     print(f"  - TensorBoard: {dirs['tb']}")
     print(f"  - Samples:     {dirs['samples']}")
+    config_yaml = write_config_yaml(dirs["root"], config)
+    print(f"  - Config:      {config_yaml}")
 
     # Initialize TensorBoard
     writer = init_tensorboard(dirs["tb"])
@@ -303,7 +305,11 @@ def main() -> None:
 
     print("Loading text encoders...")
     text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
-        config.checkpoint, device=device, dtype=dtype
+        config.checkpoint,
+        device=device,
+        dtype=dtype,
+        lora_rank=config.lora_rank,
+        lora_alpha=config.lora_alpha,
     )
 
     trainable_params = list(select_lora_params(model))

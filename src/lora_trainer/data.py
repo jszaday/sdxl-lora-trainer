@@ -120,13 +120,20 @@ def build_dataloader(
         center_crop=center_crop,
     )
 
+    loader_kwargs: dict = {
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "pin_memory": torch.cuda.is_available(),
+        "drop_last": True,  # Drop incomplete batches for consistent batch sizes
+    }
+    if torch.cuda.is_available() and num_workers > 0:
+        loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 2
+
     dataloader = DataLoader(
         dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-        drop_last=True,  # Drop incomplete batches for consistent batch sizes
+        **loader_kwargs,
     )
 
     return dataloader

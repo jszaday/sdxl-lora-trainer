@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from diffusers import AutoencoderKL, StableDiffusionXLPipeline, UNet2DConditionModel
+from safetensors.torch import load_file as load_safetensors
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
 # Cache for loaded pipeline components from single-file checkpoints
@@ -76,13 +77,74 @@ class LoRALayer(nn.Module):
         self.original_layer.requires_grad_(False)
 
         # Scaling factor
-        self.scale = alpha / rank
+        self.rank = rank
+        self.alpha = float(alpha)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass with LoRA adaptation."""
         original_output = self.original_layer(x)
         lora_output = self.lora_up(self.lora_down(x))
-        return original_output + lora_output * self.scale
+        scale = (self.alpha / self.rank) if self.rank > 0 else 1.0
+        return original_output + lora_output * scale
+
+
+class LoRAConv2d(nn.Module):
+    """LoRA wrapper for Conv2d layers."""
+
+    def __init__(
+        self,
+        original_layer: nn.Conv2d,
+        rank: int = 16,
+        alpha: float = 16.0,
+    ):
+        super().__init__()
+        self.original_layer = original_layer
+        self.rank = rank
+        self.alpha = float(alpha)
+
+        in_channels = original_layer.in_channels
+        out_channels = original_layer.out_channels
+        kernel_size = original_layer.kernel_size
+        stride = original_layer.stride
+        padding = original_layer.padding
+        dilation = original_layer.dilation
+        groups = original_layer.groups
+
+        param_kwargs = {
+            "device": original_layer.weight.device,
+            "dtype": original_layer.weight.dtype,
+            "bias": False,
+        }
+        self.lora_down = nn.Conv2d(
+            in_channels,
+            rank,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=groups,
+            **param_kwargs,
+        )
+        self.lora_up = nn.Conv2d(
+            rank,
+            out_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            dilation=1,
+            groups=1,
+            **param_kwargs,
+        )
+
+        nn.init.kaiming_uniform_(self.lora_down.weight, a=5**0.5)
+        nn.init.zeros_(self.lora_up.weight)
+        self.original_layer.requires_grad_(False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        original_output = self.original_layer(x)
+        lora_output = self.lora_up(self.lora_down(x))
+        scale = (self.alpha / self.rank) if self.rank > 0 else 1.0
+        return original_output + lora_output * scale
 
 
 def inject_lora_into_unet(
@@ -105,6 +167,7 @@ def inject_lora_into_unet(
     """
     if target_modules is None:
         # Default: target attention Q, K, V, out projections and feedforward layers
+        # Match ComfyUI's LoRA coverage
         target_modules = [
             "to_q",
             "to_k",
@@ -112,6 +175,20 @@ def inject_lora_into_unet(
             "to_out.0",  # attention output projection
             "ff.net.0.proj",  # feedforward first layer
             "ff.net.2",  # feedforward second layer
+            "conv_in",
+            "conv_out",
+            "conv1",
+            "conv2",
+            "conv_shortcut",  # resnet shortcut convolution
+            "time_emb_proj",  # per-resnet time embedding projection
+            "time_embedding.linear_1",  # global time embedding MLP
+            "time_embedding.linear_2",
+            "downsamplers.0.conv",
+            "upsamplers.0.conv",
+            "add_embedding.linear_1",
+            "add_embedding.linear_2",
+            "proj_in",  # attention input projection
+            "proj_out",  # attention output projection
         ]
 
     lora_count = 0
@@ -123,21 +200,60 @@ def inject_lora_into_unet(
             full_name = f"{prefix}.{name}" if prefix else name
 
             # Check if this layer should get LoRA
-            if isinstance(child, nn.Linear) and any(
-                pattern in full_name for pattern in target_modules
-            ):
-                # Replace with LoRA layer
-                lora_layer = LoRALayer(child, rank=rank, alpha=alpha)
-                setattr(module, name, lora_layer)
-                lora_count += 1
-            else:
-                # Recurse into children
-                inject_recursive(child, full_name)
+            if any(pattern in full_name for pattern in target_modules):
+                if isinstance(child, nn.Linear):
+                    lora_layer = LoRALayer(child, rank=rank, alpha=alpha)
+                    setattr(module, name, lora_layer)
+                    lora_count += 1
+                    continue
+                if isinstance(child, nn.Conv2d):
+                    lora_layer = LoRAConv2d(child, rank=rank, alpha=alpha)
+                    setattr(module, name, lora_layer)
+                    lora_count += 1
+                    continue
+            # Recurse into children
+            inject_recursive(child, full_name)
 
     inject_recursive(unet)
     print(f"Injected LoRA into {lora_count} layers")
 
     return unet
+
+
+def inject_lora_into_text_encoder(
+    text_encoder: nn.Module,
+    rank: int = 16,
+    alpha: float = 16.0,
+    target_modules: list[str] | None = None,
+) -> nn.Module:
+    """Inject LoRA into CLIP text encoder attention/MLP projections."""
+    if target_modules is None:
+        target_modules = [
+            "self_attn.q_proj",
+            "self_attn.k_proj",
+            "self_attn.v_proj",
+            "self_attn.out_proj",
+            "mlp.fc1",
+            "mlp.fc2",
+        ]
+
+    lora_count = 0
+
+    def inject_recursive(module: nn.Module, prefix: str = ""):
+        nonlocal lora_count
+        for name, child in module.named_children():
+            full_name = f"{prefix}.{name}" if prefix else name
+            if isinstance(child, nn.Linear) and any(
+                pattern in full_name for pattern in target_modules
+            ):
+                setattr(module, name, LoRALayer(child, rank=rank, alpha=alpha))
+                lora_count += 1
+            else:
+                inject_recursive(child, full_name)
+
+    inject_recursive(text_encoder)
+    print(f"Injected LoRA into text encoder ({lora_count} layers)")
+    return text_encoder
 
 
 def load_sdxl_unet(
@@ -222,6 +338,8 @@ def load_text_encoders(
     checkpoint_or_model_id: str,
     device: str = "cpu",
     dtype: torch.dtype = torch.float32,
+    lora_rank: int = 16,
+    lora_alpha: float = 16.0,
 ) -> tuple[CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer, CLIPTokenizer]:
     """Load SDXL text encoders and tokenizers.
 
@@ -271,8 +389,12 @@ def load_text_encoders(
             subfolder="tokenizer_2" if "/" in base_model else None,
         )
 
-    text_encoder_1 = text_encoder_1.to(device)
-    text_encoder_2 = text_encoder_2.to(device)
+    text_encoder_1 = inject_lora_into_text_encoder(
+        text_encoder_1, rank=lora_rank, alpha=lora_alpha
+    ).to(device)
+    text_encoder_2 = inject_lora_into_text_encoder(
+        text_encoder_2, rank=lora_rank, alpha=lora_alpha
+    ).to(device)
 
     # Freeze text encoders
     text_encoder_1.requires_grad_(False)
@@ -291,9 +413,256 @@ def select_lora_params(model: nn.Module) -> Iterator[nn.Parameter]:
         Iterator of LoRA parameters (only lora_down and lora_up weights)
     """
     for module in model.modules():
-        if isinstance(module, LoRALayer):
+        if isinstance(module, (LoRALayer, LoRAConv2d)):
             yield from module.lora_down.parameters()
             yield from module.lora_up.parameters()
+
+
+def infer_lora_hparams(model: nn.Module) -> tuple[int | None, float | None]:
+    """Infer LoRA rank/alpha from the first LoRALayer in a model."""
+    for module in model.modules():
+        if isinstance(module, LoRALayer):
+            return module.rank, module.alpha
+    return None, None
+
+
+def _load_lora_state(lora_path: Path) -> dict[str, torch.Tensor]:
+    """Load LoRA tensors from a .pt or .safetensors file."""
+    if lora_path.suffix.lower() == ".safetensors":
+        return dict(load_safetensors(str(lora_path)))
+
+    state = torch.load(lora_path, map_location="cpu")
+    if isinstance(state, dict):
+        if "model_state_dict" in state:
+            state = state["model_state_dict"]
+        elif "state_dict" in state:
+            state = state["state_dict"]
+    if not isinstance(state, dict):
+        raise ValueError(f"Unsupported LoRA checkpoint format at {lora_path}")
+    return {k: v for k, v in state.items() if "lora_" in k}
+
+
+def _build_lora_key_map(model: nn.Module, prefix: str) -> dict[str, str]:
+    """Build mapping from LoRA keys to model state dict keys.
+
+    Args:
+        model: The model (UNet or text encoder) with LoRA layers already injected
+        prefix: Prefix for LoRA keys (e.g., 'lora_unet', 'lora_te1', 'lora_te2')
+
+    Returns:
+        Dictionary mapping LoRA keys to model state dict keys
+    """
+    key_map = {}
+    state_dict = model.state_dict()
+
+    # After LoRA injection, keys look like: module.path.lora_down.weight
+    # LoRA files have keys like: lora_unet_module_path.lora_down.weight
+    # We need to map from the latter to the former
+
+    for model_key in state_dict.keys():
+        # Only process LoRA parameter keys
+        if ".lora_down.weight" not in model_key and ".lora_up.weight" not in model_key:
+            continue
+
+        # Extract the base module path (everything before .lora_down or .lora_up)
+        # Model keys look like: "add_embedding.linear_1.lora_down.weight"
+        # We want the base to be: "add_embedding.linear_1"
+
+        if ".lora_down.weight" in model_key:
+            # Find the position of .lora_down.weight
+            lora_pos = model_key.find(".lora_down.weight")
+            base_key = model_key[:lora_pos]
+            suffix = "lora_down.weight"
+        elif ".lora_up.weight" in model_key:
+            # Find the position of .lora_up.weight
+            lora_pos = model_key.find(".lora_up.weight")
+            base_key = model_key[:lora_pos]
+            suffix = "lora_up.weight"
+        else:
+            continue
+
+        # Create ComfyUI-style LoRA key: replace dots with underscores in module path
+        lora_key_base = base_key.replace(".", "_")
+
+        # Map ComfyUI format: lora_unet_module_name.suffix
+        lora_key = f"{prefix}_{lora_key_base}.{suffix}"
+        key_map[lora_key] = model_key
+
+        # Also map diffusers format: module.name.suffix (without prefix)
+        lora_key = f"{base_key}.{suffix}"
+        key_map[lora_key] = model_key
+
+    # Now handle alpha keys separately (they're not in state_dict, need to get from modules)
+    for name, module in model.named_modules():
+        if isinstance(module, (LoRALayer, LoRAConv2d)):
+            # name is like "add_embedding.linear_1"
+            # Create corresponding alpha mapping
+            lora_key_base = name.replace(".", "_")
+
+            # ComfyUI format alpha key
+            lora_alpha_key = f"{prefix}_{lora_key_base}.alpha"
+            # We don't have alpha in state dict, but we want to map it for loading
+            # Store None as placeholder - we'll handle it specially in load_lora_weights
+            key_map[lora_alpha_key] = f"{name}.alpha"
+
+            # Diffusers format alpha key
+            lora_alpha_key = f"{name}.alpha"
+            key_map[lora_alpha_key] = f"{name}.alpha"
+
+    return key_map
+
+
+def load_lora_weights(
+    lora_path: Path,
+    unet: nn.Module,
+    text_encoder_1: nn.Module | None = None,
+    text_encoder_2: nn.Module | None = None,
+) -> None:
+    """Load LoRA weights into UNet and text encoders.
+
+    Supports multiple LoRA formats:
+    - ComfyUI format: lora_unet_*, lora_te1_*, lora_te2_*
+    - Diffusers format: module.path.lora_up.weight
+    """
+    state = _load_lora_state(Path(lora_path))
+    if not state:
+        print(f"Warning: no LoRA tensors found in {lora_path}")
+        return
+
+    # Build key mappings for each model
+    unet_key_map = _build_lora_key_map(unet, "lora_unet")
+    te1_key_map = _build_lora_key_map(text_encoder_1, "lora_te1") if text_encoder_1 else {}
+    te2_key_map = _build_lora_key_map(text_encoder_2, "lora_te2") if text_encoder_2 else {}
+
+    # Combine all mappings to find what each LoRA key maps to
+    all_mappings = {**unet_key_map, **te1_key_map, **te2_key_map}
+
+    # Group LoRA tensors by target model (weights only, not alphas)
+    groups = {"unet": {}, "te1": {}, "te2": {}}
+    # Group alpha values separately for manual application
+    alphas = {"unet": {}, "te1": {}, "te2": {}}
+    loaded_keys = set()
+
+    for lora_key, lora_tensor in state.items():
+        if lora_key in all_mappings:
+            model_key = all_mappings[lora_key]
+
+            # Separate alpha values from weights
+            is_alpha = lora_key.endswith(".alpha")
+
+            # Determine which model this belongs to
+            if lora_key in unet_key_map:
+                if is_alpha:
+                    # Extract module name (remove .alpha suffix from model_key)
+                    module_name = model_key[: -len(".alpha")]
+                    alphas["unet"][module_name] = lora_tensor.item()
+                else:
+                    groups["unet"][model_key] = lora_tensor
+            elif lora_key in te1_key_map:
+                if is_alpha:
+                    module_name = model_key[: -len(".alpha")]
+                    alphas["te1"][module_name] = lora_tensor.item()
+                else:
+                    groups["te1"][model_key] = lora_tensor
+            elif lora_key in te2_key_map:
+                if is_alpha:
+                    module_name = model_key[: -len(".alpha")]
+                    alphas["te2"][module_name] = lora_tensor.item()
+                else:
+                    groups["te2"][model_key] = lora_tensor
+
+            loaded_keys.add(lora_key)
+
+    # Load weights into each model
+    def _load_component(
+        model: nn.Module | None,
+        substate: dict[str, torch.Tensor],
+        alpha_dict: dict[str, float],
+    ) -> int:
+        if model is None or not substate:
+            return 0
+
+        # Load weights
+        result = model.load_state_dict(substate, strict=False)
+        loaded_count = len(substate) - len(result.unexpected_keys)
+
+        # Apply alpha values to LoRA modules
+        for module_name, alpha_value in alpha_dict.items():
+            # Navigate to the module
+            parts = module_name.split(".")
+            module = model
+            try:
+                for part in parts:
+                    module = getattr(module, part)
+                # Update alpha if this is a LoRA module
+                if isinstance(module, (LoRALayer, LoRAConv2d)):
+                    module.alpha = float(alpha_value)
+            except AttributeError:
+                # Module not found, skip
+                pass
+
+        return loaded_count
+
+    applied_unet = _load_component(unet, groups["unet"], alphas["unet"])
+    applied_te1 = _load_component(text_encoder_1, groups["te1"], alphas["te1"])
+    applied_te2 = _load_component(text_encoder_2, groups["te2"], alphas["te2"])
+
+    applied_total = applied_unet + applied_te1 + applied_te2
+    dropped_count = len(state) - len(loaded_keys)
+
+    print(
+        f"Applied {applied_total} LoRA tensors "
+        f"(UNet {applied_unet}, TE1 {applied_te1}, TE2 {applied_te2})"
+    )
+
+    if dropped_count > 0:
+        print(f"Warning: dropped {dropped_count} LoRA tensors (no matching modules)")
+
+
+def extract_lora_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
+    """Extract LoRA weights and alpha values from a model.
+
+    Returns a state dict with:
+    - module.lora_down.weight
+    - module.lora_up.weight
+    - module.alpha (as a scalar tensor)
+
+    Args:
+        model: Model with LoRA layers injected
+
+    Returns:
+        Dictionary with LoRA weights and alpha values
+    """
+    lora_state = {}
+    state_dict = model.state_dict()
+
+    # First, get all the lora_down and lora_up weights
+    for key, tensor in state_dict.items():
+        if ".lora_down.weight" in key or ".lora_up.weight" in key:
+            lora_state[key] = tensor.detach().cpu()
+
+    # Now extract alpha values from LoRALayer and LoRAConv2d modules
+    for name, module in model.named_modules():
+        if isinstance(module, (LoRALayer, LoRAConv2d)):
+            # Alpha is stored as an instance variable
+            alpha_key = f"{name}.alpha"
+            # Store as a scalar tensor to match ComfyUI format
+            lora_state[alpha_key] = torch.tensor(module.alpha, dtype=torch.float32)
+
+    return lora_state
+
+
+def build_lora_metadata(rank: int | None, alpha: float | None) -> dict[str, str]:
+    """Build safetensors metadata for LoRA exports."""
+    meta = {
+        "format": "pt",
+        "generator": "lora_trainer",
+    }
+    if rank is not None:
+        meta["network_dim"] = str(rank)
+    if alpha is not None:
+        meta["network_alpha"] = str(alpha)
+    return meta
 
 
 # Backward compatibility: keep load_model() as alias for now

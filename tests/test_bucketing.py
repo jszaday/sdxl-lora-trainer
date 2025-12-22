@@ -256,9 +256,7 @@ class TestBucketBatchSampler:
         # Create dataset without bucketing
         dataset = ImageFolderWithCaptions(tmp_path, bucket_config=None)
 
-        with pytest.raises(
-            ValueError, match="BucketBatchSampler requires.*bucketing enabled"
-        ):
+        with pytest.raises(ValueError, match="BucketBatchSampler requires.*bucketing enabled"):
             BucketBatchSampler(dataset, batch_size=2)
 
     def test_sampler_groups_by_bucket(self, tmp_path):

@@ -186,6 +186,9 @@ def train(
     current_epoch = 0
     last_checkpoint_step: int | None = None
 
+    # Loss accumulation for batched logging (reduces GPU sync overhead)
+    accumulated_losses = []
+
     # Progress bar for global steps
     pbar = tqdm(total=config.steps, desc="Training", unit="step", initial=global_step)
 
@@ -346,32 +349,44 @@ def train(
 
                 global_step += 1
 
-                # Log to TensorBoard
-                writer.add_scalar("train/loss", loss.item() * config.grad_accum, global_step)
-                effective_lr = optimizer.param_groups[0]["lr"]
-                last_step = getattr(optimizer, "last_step_size", None)
-                if last_step is not None:
-                    effective_lr = last_step
-                writer.add_scalar("train/lr", effective_lr, global_step)
-                writer.add_scalar("train/epoch", current_epoch, global_step)
+                # Accumulate loss on GPU (detached to avoid keeping computation graph)
+                accumulated_losses.append((loss * config.grad_accum).detach())
 
-                step_duration = time.perf_counter() - step_start_time
-                log_perf_metrics(
-                    writer=writer,
-                    global_step=global_step,
-                    step_time=step_duration,
-                    effective_batch_size=config.effective_batch_size,
-                    device=device,
-                )
+                # Log to TensorBoard every log_every steps to reduce GPU sync overhead
+                should_log = global_step % config.log_every == 0
+                if should_log:
+                    # Compute mean loss on GPU, then sync once
+                    mean_loss = torch.stack(accumulated_losses).mean().item()
+                    writer.add_scalar("train/loss", mean_loss, global_step)
+                    accumulated_losses.clear()
 
-                # Update progress bar
+                    # Log other metrics
+                    effective_lr = optimizer.param_groups[0]["lr"]
+                    last_step = getattr(optimizer, "last_step_size", None)
+                    if last_step is not None:
+                        effective_lr = last_step
+                    writer.add_scalar("train/lr", effective_lr, global_step)
+                    writer.add_scalar("train/epoch", current_epoch, global_step)
+
+                    step_duration = time.perf_counter() - step_start_time
+                    log_perf_metrics(
+                        writer=writer,
+                        global_step=global_step,
+                        step_time=step_duration,
+                        effective_batch_size=config.effective_batch_size,
+                        device=device,
+                    )
+
+                    # Update progress bar with loss details
+                    pbar.set_postfix(
+                        {
+                            "loss": f"{mean_loss:.4f}",
+                            "epoch": current_epoch,
+                        }
+                    )
+
+                # Always update progress bar counter (no sync needed for this)
                 pbar.update(1)
-                pbar.set_postfix(
-                    {
-                        "loss": f"{loss.item() * config.grad_accum:.4f}",
-                        "epoch": current_epoch,
-                    }
-                )
 
                 # Save checkpoint periodically
                 if global_step % config.sample_every == 0:

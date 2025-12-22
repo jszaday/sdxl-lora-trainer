@@ -254,6 +254,13 @@ def parse_args() -> argparse.Namespace:
         help="Random seed for reproducibility (default: 42)",
     )
     misc_group.add_argument(
+        "--log_every",
+        type=int,
+        default=10,
+        help="Log metrics to TensorBoard every N steps. "
+        "Higher values reduce GPU sync overhead (default: 10)",
+    )
+    misc_group.add_argument(
         "--mixed_precision",
         type=str,
         default="fp16",
@@ -305,6 +312,7 @@ def main() -> None:
             lycoris_dim=args.lycoris_dim,
             lycoris_alpha=args.lycoris_alpha,
             seed=args.seed,
+            log_every=args.log_every,
             mixed_precision=args.mixed_precision,
             resume_from=args.resume_from,
         )

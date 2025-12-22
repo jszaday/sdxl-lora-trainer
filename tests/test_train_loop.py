@@ -141,6 +141,7 @@ def test_train_logs_perf_metrics(temp_workspace, temp_data_dir):
         grad_accum=1,
         image_size=512,
         sample_every=10,  # avoid periodic checkpoints
+        log_every=1,  # log every step for testing
     )
 
     dirs = create_run_dirs(config.workspace)

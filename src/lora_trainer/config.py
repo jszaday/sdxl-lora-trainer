@@ -54,6 +54,7 @@ class TrainingConfig:
     seed: int = 42
     mixed_precision: str = "fp16"  # "no", "fp16", "bf16"
     resume_from: Path | None = None  # Optional checkpoint path/dir to resume from
+    log_every: int = 10  # Log metrics every N steps (reduces GPU sync overhead)
 
     # Internal fields computed after init
     num_images: int = field(init=False, default=0)
@@ -101,6 +102,8 @@ class TrainingConfig:
             raise ValueError(f"sample_every must be positive, got {self.sample_every}")
         if self.samples_per_prompt <= 0:
             raise ValueError(f"samples_per_prompt must be positive, got {self.samples_per_prompt}")
+        if self.log_every <= 0:
+            raise ValueError(f"log_every must be positive, got {self.log_every}")
 
         # Validate adapter type early
         self.adapter = self.adapter.lower()

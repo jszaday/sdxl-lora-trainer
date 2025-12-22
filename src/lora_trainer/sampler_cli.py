@@ -294,27 +294,33 @@ def main() -> None:
                 print(f"Error loading LyCORIS checkpoint: {e}")
                 sys.exit(1)
 
-            model_state = (
-                checkpoint.get("model_state_dict", checkpoint)
-                if isinstance(checkpoint, dict)
-                else checkpoint
-            )
-            unet.load_state_dict(model_state, strict=False)
+            # Support both new (adapter state dicts) and old (full model) formats
+            if isinstance(checkpoint, dict):
+                # Try new format first (adapter state dicts)
+                if "unet_adapter_state_dict" in checkpoint:
+                    unet_adapter.load_state_dict(checkpoint["unet_adapter_state_dict"])
+                else:
+                    # Fall back to old format (full model state)
+                    model_state = checkpoint.get("model_state_dict", checkpoint)
+                    unet.load_state_dict(model_state, strict=False)
 
-            te1_state = (
-                checkpoint.get("text_encoder_1_state_dict")
-                if isinstance(checkpoint, dict)
-                else None
-            )
-            te2_state = (
-                checkpoint.get("text_encoder_2_state_dict")
-                if isinstance(checkpoint, dict)
-                else None
-            )
-            if text_encoder_1 is not None and te1_state is not None:
-                text_encoder_1.load_state_dict(te1_state, strict=False)
-            if text_encoder_2 is not None and te2_state is not None:
-                text_encoder_2.load_state_dict(te2_state, strict=False)
+                # Load text encoder adapters
+                if "te1_adapter_state_dict" in checkpoint:
+                    te1_adapter.load_state_dict(checkpoint["te1_adapter_state_dict"])
+                elif "text_encoder_1_state_dict" in checkpoint:
+                    te1_state = checkpoint["text_encoder_1_state_dict"]
+                    if text_encoder_1 is not None and te1_state is not None:
+                        text_encoder_1.load_state_dict(te1_state, strict=False)
+
+                if "te2_adapter_state_dict" in checkpoint:
+                    te2_adapter.load_state_dict(checkpoint["te2_adapter_state_dict"])
+                elif "text_encoder_2_state_dict" in checkpoint:
+                    te2_state = checkpoint["text_encoder_2_state_dict"]
+                    if text_encoder_2 is not None and te2_state is not None:
+                        text_encoder_2.load_state_dict(te2_state, strict=False)
+            else:
+                # Direct state dict (old format)
+                unet.load_state_dict(checkpoint, strict=False)
         else:
             print(f"Loading LoRA weights from: {args.lora_checkpoint}")
             try:

@@ -88,6 +88,10 @@ def train(
     tokenizer_1=None,
     tokenizer_2=None,
     start_step: int = 0,
+    unet_adapter=None,
+    te1_adapter=None,
+    te2_adapter=None,
+    base_model: str | None = None,
 ) -> None:
     """Run the complete training loop.
 
@@ -401,6 +405,10 @@ def train(
                         text_encoder_1=text_encoder_1,
                         text_encoder_2=text_encoder_2,
                         adapter_type=config.adapter,
+                        unet_adapter=unet_adapter,
+                        te1_adapter=te1_adapter,
+                        te2_adapter=te2_adapter,
+                        base_model=base_model,
                     )
                     checkpoint_duration = time.perf_counter() - checkpoint_start
                     writer.add_scalar("perf/checkpoint_time_sec", checkpoint_duration, global_step)
@@ -450,6 +458,10 @@ def train(
         text_encoder_1=text_encoder_1,
         text_encoder_2=text_encoder_2,
         adapter_type=config.adapter,
+        unet_adapter=unet_adapter,
+        te1_adapter=te1_adapter,
+        te2_adapter=te2_adapter,
+        base_model=base_model,
     )
     checkpoint_duration = time.perf_counter() - checkpoint_start
     writer.add_scalar("perf/checkpoint_time_sec", checkpoint_duration, global_step)
@@ -470,6 +482,10 @@ def save_checkpoint(
     text_encoder_1: nn.Module | None = None,
     text_encoder_2: nn.Module | None = None,
     adapter_type: str = "lora",
+    unet_adapter=None,
+    te1_adapter=None,
+    te2_adapter=None,
+    base_model: str | None = None,
 ) -> None:
     """Save a training checkpoint.
 
@@ -482,24 +498,45 @@ def save_checkpoint(
         skip_step_save: Skip writing the step checkpoint if it already exists
         lora_rank: LoRA rank for metadata
         lora_alpha: LoRA alpha for metadata
-        text_encoder_1: Optional text encoder 1 with LoRA
-        text_encoder_2: Optional text encoder 2 with LoRA
+        text_encoder_1: Optional text encoder 1 with adapter
+        text_encoder_2: Optional text encoder 2 with adapter
         adapter_type: Adapter backend ('lora' or 'lycoris')
+        unet_adapter: Optional UNet adapter object (for LyCORIS)
+        te1_adapter: Optional text_encoder_1 adapter object (for LyCORIS)
+        te2_adapter: Optional text_encoder_2 adapter object (for LyCORIS)
+        base_model: Base model checkpoint path or HF model ID
     """
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint = {
-        "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "global_step": global_step,
+        "adapter_type": adapter_type,
     }
 
-    # Include text encoder state dicts if provided
-    if text_encoder_1 is not None:
-        checkpoint["text_encoder_1_state_dict"] = text_encoder_1.state_dict()
-    if text_encoder_2 is not None:
-        checkpoint["text_encoder_2_state_dict"] = text_encoder_2.state_dict()
+    # Save base model reference for resume
+    if base_model is not None:
+        checkpoint["base_model"] = base_model
+
+    # Save adapter state dicts based on adapter type
+    if adapter_type == "lycoris":
+        # For LyCORIS, save adapter state dicts directly
+        if unet_adapter is not None:
+            checkpoint["unet_adapter_state_dict"] = unet_adapter.state_dict()
+        if te1_adapter is not None:
+            checkpoint["te1_adapter_state_dict"] = te1_adapter.state_dict()
+        if te2_adapter is not None:
+            checkpoint["te2_adapter_state_dict"] = te2_adapter.state_dict()
+    else:
+        # For LoRA, extract LoRA weights from model states
+        from .model import extract_lora_state_dict
+
+        checkpoint["model_state_dict"] = extract_lora_state_dict(model)
+        if text_encoder_1 is not None:
+            checkpoint["text_encoder_1_state_dict"] = extract_lora_state_dict(text_encoder_1)
+        if text_encoder_2 is not None:
+            checkpoint["text_encoder_2_state_dict"] = extract_lora_state_dict(text_encoder_2)
 
     # Always save full checkpoints as .pt for training resumes
     checkpoint_path = checkpoint_dir / f"step_{global_step:06d}.pt"
@@ -584,6 +621,9 @@ def load_checkpoint(
     device: str,
     text_encoder_1: nn.Module | None = None,
     text_encoder_2: nn.Module | None = None,
+    unet_adapter=None,
+    te1_adapter=None,
+    te2_adapter=None,
 ) -> int:
     """Load model/optimizer state from a checkpoint file.
 
@@ -594,6 +634,9 @@ def load_checkpoint(
         device: Device for loading
         text_encoder_1: Optional text encoder 1 to load weights into
         text_encoder_2: Optional text encoder 2 to load weights into
+        unet_adapter: Optional UNet adapter to load state into (LyCORIS)
+        te1_adapter: Optional text_encoder_1 adapter to load state into (LyCORIS)
+        te2_adapter: Optional text_encoder_2 adapter to load state into (LyCORIS)
 
     Returns:
         global_step stored in the checkpoint (0 if missing)
@@ -601,15 +644,41 @@ def load_checkpoint(
     checkpoint_path = Path(checkpoint_path)
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
-    model.load_state_dict(checkpoint["model_state_dict"])
+    adapter_type = checkpoint.get("adapter_type", "lora")
 
-    # Load text encoder state if available
-    if text_encoder_1 is not None and "text_encoder_1_state_dict" in checkpoint:
-        text_encoder_1.load_state_dict(checkpoint["text_encoder_1_state_dict"])
-    if text_encoder_2 is not None and "text_encoder_2_state_dict" in checkpoint:
-        text_encoder_2.load_state_dict(checkpoint["text_encoder_2_state_dict"])
+    # Load adapter state dicts based on adapter type
+    if adapter_type == "lycoris":
+        # For LyCORIS, load adapter state dicts
+        if unet_adapter is not None and "unet_adapter_state_dict" in checkpoint:
+            unet_adapter.load_state_dict(checkpoint["unet_adapter_state_dict"])
+            print("  Loaded UNet LyCORIS adapter weights")
 
+        if te1_adapter is not None and "te1_adapter_state_dict" in checkpoint:
+            te1_adapter.load_state_dict(checkpoint["te1_adapter_state_dict"])
+            print("  Loaded text_encoder_1 LyCORIS adapter weights")
+
+        if te2_adapter is not None and "te2_adapter_state_dict" in checkpoint:
+            te2_adapter.load_state_dict(checkpoint["te2_adapter_state_dict"])
+            print("  Loaded text_encoder_2 LyCORIS adapter weights")
+    else:
+        # For LoRA, load extracted LoRA weights into models
+        if "model_state_dict" in checkpoint:
+            # Use strict=False since we're only loading LoRA weights, not full model
+            model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+            print("  Loaded UNet LoRA weights")
+
+        # Load text encoder LoRA weights if available
+        if text_encoder_1 is not None and "text_encoder_1_state_dict" in checkpoint:
+            text_encoder_1.load_state_dict(checkpoint["text_encoder_1_state_dict"], strict=False)
+            print("  Loaded text_encoder_1 LoRA weights")
+
+        if text_encoder_2 is not None and "text_encoder_2_state_dict" in checkpoint:
+            text_encoder_2.load_state_dict(checkpoint["text_encoder_2_state_dict"], strict=False)
+            print("  Loaded text_encoder_2 LoRA weights")
+
+    # Load optimizer state
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        print("  Loaded optimizer state")
 
     return int(checkpoint.get("global_step", 0))

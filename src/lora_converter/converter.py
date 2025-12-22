@@ -177,36 +177,61 @@ def convert_lycoris_checkpoint(
         raise FileExistsError(f"Refusing to overwrite existing file: {output_path}")
 
     # Load checkpoint (handles both .pt and .safetensors)
-    state = _load_state_dict(input_path)
+    if input_path.suffix == ".pt":
+        checkpoint = torch.load(input_path, map_location="cpu")
+    else:
+        checkpoint = load_file(str(input_path))
 
     # Extract LyCORIS tensors
     lycoris_state = {}
 
-    # Scan model_state_dict for LyCORIS weights
-    model_state = state.get("model_state_dict", state)
-    for key, tensor in model_state.items():
-        if _is_lycoris_key(key):
-            # Determine source based on key patterns
-            if "text_model" in key or "text_encoder" in key:
-                # Text encoder key - determine TE1 vs TE2
-                if "clip_g" in key or "text_encoder_2" in key:
-                    prefix = "text_encoder_2"
+    # Check for adapter state dicts (new format - adapters saved separately)
+    if "unet_adapter_state_dict" in checkpoint:
+        # New format: adapter states saved separately
+        unet_adapter = checkpoint["unet_adapter_state_dict"]
+        for key, tensor in unet_adapter.items():
+            lycoris_state[f"unet.{key}"] = tensor.detach().cpu()
+
+        if "te1_adapter_state_dict" in checkpoint:
+            te1_adapter = checkpoint["te1_adapter_state_dict"]
+            for key, tensor in te1_adapter.items():
+                lycoris_state[f"text_encoder_1.{key}"] = tensor.detach().cpu()
+
+        if "te2_adapter_state_dict" in checkpoint:
+            te2_adapter = checkpoint["te2_adapter_state_dict"]
+            for key, tensor in te2_adapter.items():
+                lycoris_state[f"text_encoder_2.{key}"] = tensor.detach().cpu()
+    else:
+        # Old format: scan model_state_dict for embedded LyCORIS weights
+        if isinstance(checkpoint, dict):
+            state = checkpoint.get("model_state_dict", checkpoint)
+        else:
+            state = checkpoint
+
+        for key, tensor in state.items():
+            if _is_lycoris_key(key):
+                # Determine source based on key patterns
+                if "text_model" in key or "text_encoder" in key:
+                    # Text encoder key - determine TE1 vs TE2
+                    if "clip_g" in key or "text_encoder_2" in key:
+                        prefix = "text_encoder_2"
+                    else:
+                        prefix = "text_encoder_1"
                 else:
-                    prefix = "text_encoder_1"
-            else:
-                # UNet key (no text_model/text_encoder in key)
-                prefix = "unet"
+                    # UNet key (no text_model/text_encoder in key)
+                    prefix = "unet"
 
-            # Add prefix and save (keep native LyCORIS format)
-            lycoris_state[f"{prefix}.{key}"] = tensor.detach().cpu()
+                # Add prefix and save (keep native LyCORIS format)
+                lycoris_state[f"{prefix}.{key}"] = tensor.detach().cpu()
 
-    # Also check separate text encoder state dicts if present
-    for te_key in ["text_encoder_1_state_dict", "text_encoder_2_state_dict"]:
-        if te_key in state:
-            te_name = te_key.replace("_state_dict", "")
-            for key, tensor in state[te_key].items():
-                if _is_lycoris_key(key):
-                    lycoris_state[f"{te_name}.{key}"] = tensor.detach().cpu()
+        # Also check separate text encoder state dicts if present (old format)
+        if isinstance(checkpoint, dict):
+            for te_key in ["text_encoder_1_state_dict", "text_encoder_2_state_dict"]:
+                if te_key in checkpoint:
+                    te_name = te_key.replace("_state_dict", "")
+                    for key, tensor in checkpoint[te_key].items():
+                        if _is_lycoris_key(key):
+                            lycoris_state[f"{te_name}.{key}"] = tensor.detach().cpu()
 
     if not lycoris_state:
         raise ValueError(f"No LyCORIS tensors found in {input_path}")

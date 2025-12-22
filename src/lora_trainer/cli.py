@@ -552,6 +552,9 @@ def main() -> None:
             device=device,
             text_encoder_1=text_encoder_1,
             text_encoder_2=text_encoder_2,
+            unet_adapter=unet_adapter,
+            te1_adapter=te1_adapter,
+            te2_adapter=te2_adapter,
         )
         print(f"  Loaded global_step={resume_step}")
 
@@ -577,6 +580,10 @@ def main() -> None:
         tokenizer_1=tokenizer_1,
         tokenizer_2=tokenizer_2,
         start_step=resume_step,
+        unet_adapter=unet_adapter,
+        te1_adapter=te1_adapter,
+        te2_adapter=te2_adapter,
+        base_model=config.checkpoint,
     )
 
     # Cleanup

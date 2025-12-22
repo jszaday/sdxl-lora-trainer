@@ -38,6 +38,7 @@ def apply_lycoris_adapter(
     linear_alpha: float,
     algo: str = "lokr",
     factor: int = -1,
+    device: str = "cpu",
     preset: dict[str, list[str]] | None = None,
     multiplier: float = 1.0,
 ) -> "LycorisNetwork":
@@ -60,6 +61,10 @@ def apply_lycoris_adapter(
         factor=factor,
     )
     lyco_net.apply_to()
+
+    # Move LyCORIS parameters to the same device as the model
+    lyco_net = lyco_net.to(device)
+
     return lyco_net
 
 
@@ -364,6 +369,7 @@ def load_sdxl_unet(
             linear_alpha=lycoris_alpha or lora_alpha,
             algo=lycoris_algo,
             factor=lycoris_factor,
+            device=device,
         )
     else:
         raise ValueError(f"Unknown adapter type: {adapter}")
@@ -502,6 +508,7 @@ def load_text_encoders(
                 linear_alpha=lycoris_alpha or lora_alpha,
                 algo=lycoris_algo,
                 factor=lycoris_factor,
+                device=device,
             )
             te2_adapter = apply_lycoris_adapter(
                 text_encoder_2,
@@ -509,6 +516,7 @@ def load_text_encoders(
                 linear_alpha=lycoris_alpha or lora_alpha,
                 algo=lycoris_algo,
                 factor=lycoris_factor,
+                device=device,
             )
         else:
             raise ValueError(f"Unknown adapter type: {adapter}")

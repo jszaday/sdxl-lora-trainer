@@ -49,6 +49,7 @@ class TrainingConfig:
     lycoris_algo: str = "lokr"
     lycoris_dim: int | None = None
     lycoris_alpha: float | None = None
+    lycoris_factor: int = -1  # Factorization factor for LyCORIS (-1 = auto)
 
     # Misc
     seed: int = 42
@@ -189,6 +190,7 @@ class TrainingConfig:
                     f"LyCORIS Algo:       {self.lycoris_algo}",
                     f"LyCORIS Dim:        {self.lycoris_dim}",
                     f"LyCORIS Alpha:      {self.lycoris_alpha}",
+                    f"LyCORIS Factor:     {self.lycoris_factor}",
                     "",
                 ]
             )

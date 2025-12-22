@@ -231,6 +231,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="LyCORIS linear_alpha (defaults to lora_alpha when omitted)",
     )
+    lora_group.add_argument(
+        "--lycoris_factor",
+        type=int,
+        default=-1,
+        help="LyCORIS factorization factor (default: -1 for auto)",
+    )
 
     # Misc arguments
     misc_group = parser.add_argument_group("misc arguments")
@@ -311,6 +317,7 @@ def main() -> None:
             lycoris_algo=args.lycoris_algo,
             lycoris_dim=args.lycoris_dim,
             lycoris_alpha=args.lycoris_alpha,
+            lycoris_factor=args.lycoris_factor,
             seed=args.seed,
             log_every=args.log_every,
             mixed_precision=args.mixed_precision,
@@ -435,6 +442,7 @@ def main() -> None:
         lycoris_dim=config.lycoris_dim,
         lycoris_alpha=config.lycoris_alpha,
         lycoris_algo=config.lycoris_algo,
+        lycoris_factor=config.lycoris_factor,
     )
 
     # Enable gradient checkpointing if requested
@@ -461,6 +469,7 @@ def main() -> None:
             lycoris_dim=config.lycoris_dim,
             lycoris_alpha=config.lycoris_alpha,
             lycoris_algo=config.lycoris_algo,
+            lycoris_factor=config.lycoris_factor,
         )
     else:
         print("\nLoading VAE...")
@@ -483,6 +492,7 @@ def main() -> None:
             lycoris_dim=config.lycoris_dim,
             lycoris_alpha=config.lycoris_alpha,
             lycoris_algo=config.lycoris_algo,
+            lycoris_factor=config.lycoris_factor,
         )
 
     # Collect adapter parameters - UNet only when using cached data

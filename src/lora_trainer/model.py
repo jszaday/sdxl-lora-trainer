@@ -37,6 +37,7 @@ def apply_lycoris_adapter(
     linear_dim: int,
     linear_alpha: float,
     algo: str = "lokr",
+    factor: int = -1,
     preset: dict[str, list[str]] | None = None,
     multiplier: float = 1.0,
 ) -> "LycorisNetwork":
@@ -56,6 +57,7 @@ def apply_lycoris_adapter(
         linear_dim=linear_dim,
         linear_alpha=linear_alpha,
         algo=algo,
+        factor=factor,
     )
     lyco_net.apply_to()
     return lyco_net
@@ -311,6 +313,7 @@ def load_sdxl_unet(
     lycoris_dim: int | None = None,
     lycoris_alpha: float | None = None,
     lycoris_algo: str = "lokr",
+    lycoris_factor: int = -1,
 ) -> tuple[UNet2DConditionModel, Any | None]:
     """Load SDXL UNet and inject LoRA layers.
 
@@ -324,6 +327,7 @@ def load_sdxl_unet(
         lycoris_dim: LyCORIS linear dim (defaults to lora_rank)
         lycoris_alpha: LyCORIS alpha (defaults to lora_alpha)
         lycoris_algo: LyCORIS algorithm (e.g., 'lokr')
+        lycoris_factor: LyCORIS factorization factor (-1 = auto)
 
     Returns:
         Tuple of (UNet with adapters, adapter handle or None)
@@ -345,6 +349,10 @@ def load_sdxl_unet(
             torch_dtype=dtype,
         )
 
+    # Move model to device BEFORE applying adapters so adapter params
+    # are created on the right device
+    unet = unet.to(device)
+
     adapter = adapter.lower()
     lyco_net = None
     if adapter == "lora":
@@ -355,11 +363,11 @@ def load_sdxl_unet(
             linear_dim=lycoris_dim or lora_rank,
             linear_alpha=lycoris_alpha or lora_alpha,
             algo=lycoris_algo,
+            factor=lycoris_factor,
         )
     else:
         raise ValueError(f"Unknown adapter type: {adapter}")
 
-    unet = unet.to(device)
     return unet, lyco_net
 
 
@@ -408,6 +416,7 @@ def load_text_encoders(
     lycoris_dim: int | None = None,
     lycoris_alpha: float | None = None,
     lycoris_algo: str = "lokr",
+    lycoris_factor: int = -1,
 ) -> tuple[
     CLIPTextModel,
     CLIPTextModelWithProjection,
@@ -424,6 +433,7 @@ def load_text_encoders(
         device: Device to load encoders on
         dtype: Encoder dtype
         adapter: Adapter backend ('lora' or 'lycoris')
+        lycoris_factor: LyCORIS factorization factor (-1 = auto)
 
     Returns:
         Tuple of (text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, adapter handles)
@@ -468,6 +478,11 @@ def load_text_encoders(
     text_encoder_1.requires_grad_(False)
     text_encoder_2.requires_grad_(False)
 
+    # Move models to device BEFORE applying adapters so adapter params
+    # are created on the right device
+    text_encoder_1 = text_encoder_1.to(device)
+    text_encoder_2 = text_encoder_2.to(device)
+
     adapter = adapter.lower()
     te1_adapter: Any | None = None
     te2_adapter: Any | None = None
@@ -476,30 +491,27 @@ def load_text_encoders(
         if adapter == "lora":
             text_encoder_1 = inject_lora_into_text_encoder(
                 text_encoder_1, rank=lora_rank, alpha=lora_alpha
-            ).to(device)
+            )
             text_encoder_2 = inject_lora_into_text_encoder(
                 text_encoder_2, rank=lora_rank, alpha=lora_alpha
-            ).to(device)
+            )
         elif adapter == "lycoris":
             te1_adapter = apply_lycoris_adapter(
                 text_encoder_1,
                 linear_dim=lycoris_dim or lora_rank,
                 linear_alpha=lycoris_alpha or lora_alpha,
                 algo=lycoris_algo,
+                factor=lycoris_factor,
             )
             te2_adapter = apply_lycoris_adapter(
                 text_encoder_2,
                 linear_dim=lycoris_dim or lora_rank,
                 linear_alpha=lycoris_alpha or lora_alpha,
                 algo=lycoris_algo,
+                factor=lycoris_factor,
             )
-            text_encoder_1 = text_encoder_1.to(device)
-            text_encoder_2 = text_encoder_2.to(device)
         else:
             raise ValueError(f"Unknown adapter type: {adapter}")
-    else:
-        text_encoder_1 = text_encoder_1.to(device)
-        text_encoder_2 = text_encoder_2.to(device)
 
     return text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, (te1_adapter, te2_adapter)
 

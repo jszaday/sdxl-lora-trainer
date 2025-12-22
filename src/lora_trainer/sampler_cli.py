@@ -125,6 +125,12 @@ def parse_args() -> argparse.Namespace:
         help="LyCORIS linear_alpha (defaults to lora_alpha or TrainingConfig.lora_alpha)",
     )
     lora_group.add_argument(
+        "--lycoris_factor",
+        type=int,
+        default=-1,
+        help="LyCORIS factorization factor (default: -1 for auto)",
+    )
+    lora_group.add_argument(
         "--lora_checkpoint",
         type=Path,
         default=None,
@@ -253,6 +259,7 @@ def main() -> None:
         lycoris_dim=effective_lyco_dim,
         lycoris_alpha=effective_lyco_alpha,
         lycoris_algo=args.lycoris_algo,
+        lycoris_factor=args.lycoris_factor,
     )
 
     print("Loading VAE...")
@@ -275,6 +282,7 @@ def main() -> None:
         lycoris_dim=effective_lyco_dim,
         lycoris_alpha=effective_lyco_alpha,
         lycoris_algo=args.lycoris_algo,
+        lycoris_factor=args.lycoris_factor,
     )
 
     if args.lora_checkpoint is not None:

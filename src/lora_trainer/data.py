@@ -454,6 +454,20 @@ def build_cached_dataloader(
     """
     dataset = CachedLatentsDataset(cache_dir=cache_dir)
 
+    # Check if cache was created with bucketing enabled
+    bucketing_enabled = dataset.metadata.get("bucketing_enabled", False)
+    if bucketing_enabled and batch_size > 1:
+        logger.warning(
+            f"Cache was created with aspect-ratio bucketing enabled. "
+            f"Latents have different sizes and cannot be batched together. "
+            f"Forcing batch_size=1 (requested: {batch_size})."
+        )
+        logger.warning(
+            "To use larger batch sizes with bucketing, train without caching "
+            "(use --no-cached-data flag)."
+        )
+        batch_size = 1
+
     loader_kwargs: dict = {
         "batch_size": batch_size,
         "shuffle": shuffle,

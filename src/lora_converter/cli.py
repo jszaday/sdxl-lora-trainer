@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .converter import convert_checkpoint
+from .converter import convert_checkpoint, convert_lycoris_checkpoint
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,6 +30,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Overwrite the output file if it already exists",
     )
+    parser.add_argument(
+        "--lycoris",
+        action="store_true",
+        help="Convert LyCORIS checkpoint instead of LoRA",
+    )
     return parser.parse_args()
 
 
@@ -37,8 +42,14 @@ def main() -> None:
     args = parse_args()
     output_path = args.output or args.input.with_suffix(".safetensors")
 
-    converted_path = convert_checkpoint(args.input, output_path, overwrite=args.overwrite)
-    print(f"Converted LoRA tensors -> {converted_path}")
+    if args.lycoris:
+        converted_path = convert_lycoris_checkpoint(
+            args.input, output_path, overwrite=args.overwrite
+        )
+        print(f"Converted LyCORIS checkpoint -> {converted_path}")
+    else:
+        converted_path = convert_checkpoint(args.input, output_path, overwrite=args.overwrite)
+        print(f"Converted LoRA checkpoint -> {converted_path}")
 
 
 if __name__ == "__main__":

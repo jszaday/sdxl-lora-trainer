@@ -117,3 +117,160 @@ def convert_checkpoint(input_path: Path, output_path: Path, *, overwrite: bool =
     }
     save_file(converted, str(output_path), metadata=metadata)
     return output_path
+
+
+# LyCORIS weight patterns - used to identify LyCORIS layers in checkpoints
+LYCORIS_MARKERS = [
+    "lora_up.",  # Standard LoRA-style (LoConModule)
+    "lora_down.",
+    "hada_w1_a.",  # LoHa (Hadamard Product)
+    "hada_w1_b.",
+    "hada_w2_a.",
+    "hada_w2_b.",
+    "lokr_w1.",  # LoKr (Kronecker Product)
+    "lokr_w2.",
+    "lokr_w1_a.",
+    "lokr_w1_b.",
+    "lokr_w2_a.",
+    "lokr_w2_b.",
+    "oft_blocks.",  # OFT (Orthogonal Finetuning)
+    "alpha",  # Alpha values for all types
+]
+
+
+def _is_lycoris_key(key: str) -> bool:
+    """Check if a state dict key belongs to a LyCORIS layer."""
+    return any(marker in key for marker in LYCORIS_MARKERS)
+
+
+def convert_lycoris_checkpoint(
+    input_path: Path,
+    output_path: Path,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Convert a .pt checkpoint with LyCORIS weights to safetensors.
+
+    Extracts LyCORIS weights from a full training checkpoint and saves them
+    to a single safetensors file in native LyCORIS format (no conversion).
+    Combines UNet and text encoder weights with prefixes.
+
+    Args:
+        input_path: Path to input .pt checkpoint (full training checkpoint)
+        output_path: Path to output .safetensors file
+        overwrite: Whether to overwrite existing output file
+
+    Returns:
+        Path to the created safetensors file
+
+    Raises:
+        FileExistsError: If output exists and overwrite=False
+        ValueError: If no LyCORIS tensors found in checkpoint
+
+    Example:
+        >>> convert_lycoris_checkpoint(
+        ...     Path("checkpoints/checkpoint_step_1000.pt"),
+        ...     Path("checkpoints/lycoris_step_1000.safetensors")
+        ... )
+    """
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"Refusing to overwrite existing file: {output_path}")
+
+    # Load checkpoint (handles both .pt and .safetensors)
+    state = _load_state_dict(input_path)
+
+    # Extract LyCORIS tensors
+    lycoris_state = {}
+
+    # Scan model_state_dict for LyCORIS weights
+    model_state = state.get("model_state_dict", state)
+    for key, tensor in model_state.items():
+        if _is_lycoris_key(key):
+            # Determine source based on key patterns
+            if "text_model" in key or "text_encoder" in key:
+                # Text encoder key - determine TE1 vs TE2
+                if "clip_g" in key or "text_encoder_2" in key:
+                    prefix = "text_encoder_2"
+                else:
+                    prefix = "text_encoder_1"
+            else:
+                # UNet key (no text_model/text_encoder in key)
+                prefix = "unet"
+
+            # Add prefix and save (keep native LyCORIS format)
+            lycoris_state[f"{prefix}.{key}"] = tensor.detach().cpu()
+
+    # Also check separate text encoder state dicts if present
+    for te_key in ["text_encoder_1_state_dict", "text_encoder_2_state_dict"]:
+        if te_key in state:
+            te_name = te_key.replace("_state_dict", "")
+            for key, tensor in state[te_key].items():
+                if _is_lycoris_key(key):
+                    lycoris_state[f"{te_name}.{key}"] = tensor.detach().cpu()
+
+    if not lycoris_state:
+        raise ValueError(f"No LyCORIS tensors found in {input_path}")
+
+    # Infer metadata from tensors
+    metadata = _infer_lycoris_metadata(lycoris_state)
+
+    # Save to safetensors
+    save_file(lycoris_state, str(output_path), metadata=metadata)
+    print(f"Converted {len(lycoris_state)} LyCORIS tensors to {output_path}")
+    return output_path
+
+
+def _infer_lycoris_metadata(lycoris_state: dict) -> dict[str, str]:
+    """Infer LyCORIS metadata from state dict tensors.
+
+    Detects algorithm type from key patterns and infers dimension
+    from tensor shapes.
+    """
+    meta = {
+        "format": "pt",
+        "generator": "lora_trainer",
+        "network_type": "LyCORIS",
+    }
+
+    # Detect algorithm based on key patterns
+    keys = list(lycoris_state.keys())
+    has_hada = any("hada_w1_a" in k or "hada_w1_b" in k for k in keys)
+    has_lokr = any("lokr_w1" in k or "lokr_w2" in k for k in keys)
+    has_oft = any("oft_blocks" in k for k in keys)
+
+    if has_hada:
+        algo = "loha"
+    elif has_lokr:
+        algo = "lokr"
+    elif has_oft:
+        algo = "diag-oft"
+    else:
+        algo = "locon"  # Default/LoRA-style
+
+    meta["network_algo"] = algo
+
+    # Infer dimension from tensor shapes
+    dim = None
+    for key, tensor in lycoris_state.items():
+        if tensor.ndim < 2:
+            continue
+
+        # Check different algorithm patterns
+        if "lora_down" in key:
+            dim = tensor.shape[0]
+            break
+        elif "hada_w1_a" in key:
+            dim = tensor.shape[0]
+            break
+        elif "lokr_w1_a" in key:
+            dim = tensor.shape[0]
+            break
+        elif "lokr_w1" in key:
+            dim = min(tensor.shape)
+            break
+
+    if dim is not None:
+        meta["network_dim"] = str(dim)
+        meta["network_alpha"] = str(dim)  # Default: alpha = dim
+
+    return meta

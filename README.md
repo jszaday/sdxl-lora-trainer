@@ -171,7 +171,9 @@ python -m lora_trainer.sampler_cli \
 - Pass `--adapter lycoris` (plus optional `--lycoris_*` flags) to sample with LyCORIS weights.
 - Outputs samples to `{workspace}/samples/` and logs images to `{workspace}/tb/`.
 
-### LoRA Checkpoint Conversion
+### Checkpoint Conversion
+
+#### LoRA Conversion
 
 Convert a training `.pt` checkpoint (or LoRA-only `.pt`) into ComfyUI-ready safetensors with Comfy's `lora_unet_*` naming:
 
@@ -182,6 +184,26 @@ lora-convert /path/to/step_000500.pt
 ```
 
 The converter extracts only LoRA tensors, rewrites the keys to ComfyUI's expected format, and avoids duplicate aliases.
+
+#### LyCORIS Conversion
+
+Convert any LyCORIS checkpoint to safetensors format for web use:
+
+```bash
+# Convert any checkpoint with --lycoris flag
+python -m lora_converter.cli checkpoint_step_1000.pt --lycoris
+
+# Or with custom output path
+python -m lora_converter.cli checkpoint_step_1000.pt --output my_lycoris.safetensors --lycoris
+```
+
+The LyCORIS converter:
+- Works with **any** checkpoint (not just final), including intermediate training steps
+- Auto-detects the algorithm type (lokr, loha, diag-oft, locon)
+- Auto-infers network dimensions from tensor shapes
+- Saves weights in native LyCORIS format (no conversion needed)
+- Combines UNet and text encoder weights into a single file
+- **Automatic**: Final checkpoints are automatically converted to `final_lycoris.safetensors` during training
 
 ## Monitoring Training
 
@@ -209,9 +231,11 @@ Your workspace will contain:
 ```
 ./runs/my_experiment/
   checkpoints/        # Model checkpoints
-    step_000500.pt
-    step_001000.pt
-    final_lora.safetensors
+    checkpoint_step_000500.pt
+    checkpoint_step_001000.pt
+    checkpoint_final.pt
+    final_lora.safetensors      # (if adapter=lora)
+    final_lycoris.safetensors   # (if adapter=lycoris)
   tb/                 # TensorBoard logs
   samples/            # Validation images
     step_000500.png
@@ -291,7 +315,7 @@ ruff check src/ tests/
 - Enhanced logging and progress tracking
 - Additional UX improvements
 
-**Test Status**: 53 tests passing, 2 skipped
+**Test Status**: 94 tests passing, 2 skipped
 
 ## Contributing
 

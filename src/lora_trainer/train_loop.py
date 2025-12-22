@@ -559,8 +559,22 @@ def save_checkpoint(
                 print("Warning: No LoRA weights found to export.")
         except Exception as e:
             print(f"Warning: Failed to save LoRA safetensors ({e})")
+    elif is_final and adapter_type == "lycoris":
+        # Convert LyCORIS checkpoint to safetensors using converter
+        lycoris_path = checkpoint_dir / "final_lycoris.safetensors"
+        try:
+            from ..lora_converter.converter import convert_lycoris_checkpoint
+
+            # Convert the just-saved checkpoint
+            convert_lycoris_checkpoint(
+                checkpoint_path,
+                lycoris_path,
+                overwrite=True,
+            )
+        except Exception as e:
+            print(f"Warning: Failed to convert LyCORIS checkpoint to safetensors ({e})")
     elif is_final:
-        print(f"Skipping LoRA safetensors export for adapter_type={adapter_type}")
+        print(f"Skipping adapter safetensors export for adapter_type={adapter_type}")
 
 
 def load_checkpoint(

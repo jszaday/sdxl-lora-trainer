@@ -1,4 +1,4 @@
-"""CLI entry point for SDXL LoRA training."""
+"""CLI entry point for SDXL LoRA/LyCORIS training."""
 
 import argparse
 import sys
@@ -170,6 +170,13 @@ def parse_args() -> argparse.Namespace:
     # LoRA arguments
     lora_group = parser.add_argument_group("LoRA arguments")
     lora_group.add_argument(
+        "--adapter",
+        type=str,
+        default="lora",
+        choices=["lora", "lycoris"],
+        help="Adapter backend to train (default: lora)",
+    )
+    lora_group.add_argument(
         "--lora_rank",
         type=int,
         default=16,
@@ -180,6 +187,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=16.0,
         help="LoRA alpha scaling parameter (default: 16.0)",
+    )
+    lora_group.add_argument(
+        "--lycoris_algo",
+        type=str,
+        default="lokr",
+        help="LyCORIS algorithm to use when adapter=lycoris (default: lokr)",
+    )
+    lora_group.add_argument(
+        "--lycoris_dim",
+        type=int,
+        default=None,
+        help="LyCORIS linear_dim (defaults to lora_rank when omitted)",
+    )
+    lora_group.add_argument(
+        "--lycoris_alpha",
+        type=float,
+        default=None,
+        help="LyCORIS linear_alpha (defaults to lora_alpha when omitted)",
     )
 
     # Misc arguments
@@ -245,8 +270,12 @@ def main() -> None:
             sample_every=args.sample_every,
             samples_per_prompt=args.samples_per_prompt,
             sample_clip_skip=args.sample_clip_skip,
+            adapter=args.adapter,
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,
+            lycoris_algo=args.lycoris_algo,
+            lycoris_dim=args.lycoris_dim,
+            lycoris_alpha=args.lycoris_alpha,
             seed=args.seed,
             mixed_precision=args.mixed_precision,
             resume_from=args.resume_from,
@@ -348,12 +377,16 @@ def main() -> None:
     from .model import load_sdxl_unet, load_text_encoders, load_vae, select_lora_params
     from .optim import build_optimizer
 
-    model = load_sdxl_unet(
+    model, unet_adapter = load_sdxl_unet(
         config.checkpoint,
         device=device,
         dtype=dtype,
         lora_rank=config.lora_rank,
         lora_alpha=config.lora_alpha,
+        adapter=config.adapter,
+        lycoris_dim=config.lycoris_dim,
+        lycoris_alpha=config.lycoris_alpha,
+        lycoris_algo=config.lycoris_algo,
     )
 
     # Enable gradient checkpointing if requested
@@ -368,42 +401,78 @@ def main() -> None:
         vae = load_vae(config.checkpoint, device="cpu", dtype=dtype)
         vae.eval()
 
+        te1_adapter = te2_adapter = None
         # Load text encoders without LoRA (just for sampling)
-        text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
+        text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, _ = load_text_encoders(
             config.checkpoint,
             device="cpu",
             dtype=dtype,
             lora_rank=None,  # No LoRA needed for sampling
             lora_alpha=None,
+            adapter=config.adapter,
+            lycoris_dim=config.lycoris_dim,
+            lycoris_alpha=config.lycoris_alpha,
+            lycoris_algo=config.lycoris_algo,
         )
     else:
         print("\nLoading VAE...")
         vae = load_vae(config.checkpoint, device=device, dtype=dtype)
 
         print("Loading text encoders...")
-        text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
+        (
+            text_encoder_1,
+            text_encoder_2,
+            tokenizer_1,
+            tokenizer_2,
+            (te1_adapter, te2_adapter),
+        ) = load_text_encoders(
             config.checkpoint,
             device=device,
             dtype=dtype,
             lora_rank=config.lora_rank,
             lora_alpha=config.lora_alpha,
+            adapter=config.adapter,
+            lycoris_dim=config.lycoris_dim,
+            lycoris_alpha=config.lycoris_alpha,
+            lycoris_algo=config.lycoris_algo,
         )
 
-    # Collect LoRA parameters - UNet only when using cached data
-    trainable_params = list(select_lora_params(model))
+    # Collect adapter parameters - UNet only when using cached data
+    trainable_params = []
+    te1_params = te2_params = 0
 
-    if not args.use_cached_data and text_encoder_1 is not None and text_encoder_2 is not None:
-        trainable_params.extend(select_lora_params(text_encoder_1))
-        trainable_params.extend(select_lora_params(text_encoder_2))
-        te1_params = sum(p.numel() for p in select_lora_params(text_encoder_1))
-        te2_params = sum(p.numel() for p in select_lora_params(text_encoder_2))
+    if config.adapter == "lycoris":
+        if unet_adapter is None:
+            raise RuntimeError("LyCORIS adapter for UNet was not created")
+        unet_param_list = list(unet_adapter.parameters())
+        trainable_params.extend(unet_param_list)
+        unet_params = sum(p.numel() for p in unet_param_list)
+
+        if not args.use_cached_data and text_encoder_1 is not None and text_encoder_2 is not None:
+            te1_list = list(te1_adapter.parameters()) if te1_adapter is not None else []
+            te2_list = list(te2_adapter.parameters()) if te2_adapter is not None else []
+            trainable_params.extend(te1_list)
+            trainable_params.extend(te2_list)
+            te1_params = sum(p.numel() for p in te1_list)
+            te2_params = sum(p.numel() for p in te2_list)
+        else:
+            te1_params = 0
+            te2_params = 0
     else:
-        te1_params = 0
-        te2_params = 0
+        trainable_params = list(select_lora_params(model))
+        unet_params = sum(p.numel() for p in select_lora_params(model))
+
+        if not args.use_cached_data and text_encoder_1 is not None and text_encoder_2 is not None:
+            trainable_params.extend(select_lora_params(text_encoder_1))
+            trainable_params.extend(select_lora_params(text_encoder_2))
+            te1_params = sum(p.numel() for p in select_lora_params(text_encoder_1))
+            te2_params = sum(p.numel() for p in select_lora_params(text_encoder_2))
+        else:
+            te1_params = 0
+            te2_params = 0
 
     num_params = sum(p.numel() for p in trainable_params)
-    unet_params = sum(p.numel() for p in select_lora_params(model))
-    print(f"Trainable LoRA parameters: {num_params:,}")
+    print(f"Trainable {config.adapter} parameters: {num_params:,}")
     print(f"  UNet: {unet_params:,}, TE1: {te1_params:,}, TE2: {te2_params:,}")
 
     # Create optimizer

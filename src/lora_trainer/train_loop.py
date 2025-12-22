@@ -367,6 +367,7 @@ def train(
                         lora_alpha=config.lora_alpha,
                         text_encoder_1=text_encoder_1,
                         text_encoder_2=text_encoder_2,
+                        adapter_type=config.adapter,
                     )
                     checkpoint_duration = time.perf_counter() - checkpoint_start
                     writer.add_scalar("perf/checkpoint_time_sec", checkpoint_duration, global_step)
@@ -415,6 +416,7 @@ def train(
         lora_alpha=config.lora_alpha,
         text_encoder_1=text_encoder_1,
         text_encoder_2=text_encoder_2,
+        adapter_type=config.adapter,
     )
     checkpoint_duration = time.perf_counter() - checkpoint_start
     writer.add_scalar("perf/checkpoint_time_sec", checkpoint_duration, global_step)
@@ -434,6 +436,7 @@ def save_checkpoint(
     lora_alpha: float | None = None,
     text_encoder_1: nn.Module | None = None,
     text_encoder_2: nn.Module | None = None,
+    adapter_type: str = "lora",
 ) -> None:
     """Save a training checkpoint.
 
@@ -448,6 +451,7 @@ def save_checkpoint(
         lora_alpha: LoRA alpha for metadata
         text_encoder_1: Optional text encoder 1 with LoRA
         text_encoder_2: Optional text encoder 2 with LoRA
+        adapter_type: Adapter backend ('lora' or 'lycoris')
     """
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -478,7 +482,7 @@ def save_checkpoint(
 
     # Save LoRA-only weights in safetensors format for ComfyUI, etc.
     # Only export a safetensors LoRA file for the final checkpoint
-    if is_final:
+    if is_final and adapter_type == "lora":
         lora_path = checkpoint_dir / "final_lora.safetensors"
         try:
             from safetensors.torch import save_file
@@ -522,6 +526,8 @@ def save_checkpoint(
                 print("Warning: No LoRA weights found to export.")
         except Exception as e:
             print(f"Warning: Failed to save LoRA safetensors ({e})")
+    elif is_final:
+        print(f"Skipping LoRA safetensors export for adapter_type={adapter_type}")
 
 
 def load_checkpoint(

@@ -57,7 +57,13 @@ def preprocess_dataset(
 
     # Load text encoders
     print(f"Loading text encoders from {checkpoint}...")
-    text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
+    (
+        text_encoder_1,
+        text_encoder_2,
+        tokenizer_1,
+        tokenizer_2,
+        _,
+    ) = load_text_encoders(
         checkpoint,
         device=device,
         dtype=dtype,

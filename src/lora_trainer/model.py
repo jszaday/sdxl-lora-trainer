@@ -5,6 +5,7 @@ Phase 2: Real SDXL UNet loading with LoRA injection.
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import torch
 import torch.nn as nn
@@ -12,8 +13,52 @@ from diffusers import AutoencoderKL, StableDiffusionXLPipeline, UNet2DConditionM
 from safetensors.torch import load_file as load_safetensors
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
+if TYPE_CHECKING:
+    from lycoris import LycorisNetwork
+
 # Cache for loaded pipeline components from single-file checkpoints
 _SINGLE_FILE_CACHE = {}
+
+
+def _require_lycoris() -> tuple["LycorisNetwork", Any]:
+    """Import LyCORIS lazily to avoid hard dependency when unused."""
+    try:
+        from lycoris import LycorisNetwork, create_lycoris
+    except ImportError as exc:  # pragma: no cover - exercised only when missing extra
+        raise ImportError(
+            "LyCORIS is not installed. Install it with `pip install lycoris-lora`."
+        ) from exc
+    return LycorisNetwork, create_lycoris
+
+
+def apply_lycoris_adapter(
+    model: nn.Module,
+    *,
+    linear_dim: int,
+    linear_alpha: float,
+    algo: str = "lokr",
+    preset: dict[str, list[str]] | None = None,
+    multiplier: float = 1.0,
+) -> "LycorisNetwork":
+    """Attach a LyCORIS network to the given model."""
+    lycoris_network_cls, create_lycoris = _require_lycoris()
+
+    # Default preset: match attention modules
+    if preset is None:
+        preset = {"target_name": [".*attn.*"]}
+    lycoris_network_cls.apply_preset(preset)
+
+    # Freeze base weights and create LyCORIS layers
+    model.requires_grad_(False)
+    lyco_net = create_lycoris(
+        model,
+        multiplier,
+        linear_dim=linear_dim,
+        linear_alpha=linear_alpha,
+        algo=algo,
+    )
+    lyco_net.apply_to()
+    return lyco_net
 
 
 def _load_pipeline_from_single_file(
@@ -262,7 +307,11 @@ def load_sdxl_unet(
     dtype: torch.dtype = torch.float32,
     lora_rank: int = 16,
     lora_alpha: float = 16.0,
-) -> UNet2DConditionModel:
+    adapter: str = "lora",
+    lycoris_dim: int | None = None,
+    lycoris_alpha: float | None = None,
+    lycoris_algo: str = "lokr",
+) -> tuple[UNet2DConditionModel, Any | None]:
     """Load SDXL UNet and inject LoRA layers.
 
     Args:
@@ -271,9 +320,13 @@ def load_sdxl_unet(
         dtype: Model dtype
         lora_rank: LoRA rank for adaptation
         lora_alpha: LoRA alpha scaling
+        adapter: Adapter backend ('lora' or 'lycoris')
+        lycoris_dim: LyCORIS linear dim (defaults to lora_rank)
+        lycoris_alpha: LyCORIS alpha (defaults to lora_alpha)
+        lycoris_algo: LyCORIS algorithm (e.g., 'lokr')
 
     Returns:
-        UNet with LoRA injected
+        Tuple of (UNet with adapters, adapter handle or None)
     """
     print(f"Loading SDXL UNet from {checkpoint_or_model_id}")
 
@@ -292,11 +345,22 @@ def load_sdxl_unet(
             torch_dtype=dtype,
         )
 
-    # Inject LoRA
-    unet = inject_lora_into_unet(unet, rank=lora_rank, alpha=lora_alpha)
+    adapter = adapter.lower()
+    lyco_net = None
+    if adapter == "lora":
+        unet = inject_lora_into_unet(unet, rank=lora_rank, alpha=lora_alpha)
+    elif adapter == "lycoris":
+        lyco_net = apply_lycoris_adapter(
+            unet,
+            linear_dim=lycoris_dim or lora_rank,
+            linear_alpha=lycoris_alpha or lora_alpha,
+            algo=lycoris_algo,
+        )
+    else:
+        raise ValueError(f"Unknown adapter type: {adapter}")
 
     unet = unet.to(device)
-    return unet
+    return unet, lyco_net
 
 
 def load_vae(
@@ -340,7 +404,17 @@ def load_text_encoders(
     dtype: torch.dtype = torch.float32,
     lora_rank: int = 16,
     lora_alpha: float = 16.0,
-) -> tuple[CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer, CLIPTokenizer]:
+    adapter: str = "lora",
+    lycoris_dim: int | None = None,
+    lycoris_alpha: float | None = None,
+    lycoris_algo: str = "lokr",
+) -> tuple[
+    CLIPTextModel,
+    CLIPTextModelWithProjection,
+    CLIPTokenizer,
+    CLIPTokenizer,
+    tuple[Any | None, Any | None],
+]:
     """Load SDXL text encoders and tokenizers.
 
     SDXL uses two text encoders: CLIP ViT-L and OpenCLIP ViT-bigG.
@@ -349,9 +423,10 @@ def load_text_encoders(
         checkpoint_or_model_id: HuggingFace model ID, diffusers directory, or .safetensors file
         device: Device to load encoders on
         dtype: Encoder dtype
+        adapter: Adapter backend ('lora' or 'lycoris')
 
     Returns:
-        Tuple of (text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2)
+        Tuple of (text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, adapter handles)
     """
     checkpoint_path = Path(checkpoint_or_model_id)
 
@@ -389,23 +464,44 @@ def load_text_encoders(
             subfolder="tokenizer_2" if "/" in base_model else None,
         )
 
-    # Only inject LoRA if rank is specified
+    # Freeze base parameters before attaching adapters so new adapter params stay trainable
+    text_encoder_1.requires_grad_(False)
+    text_encoder_2.requires_grad_(False)
+
+    adapter = adapter.lower()
+    te1_adapter: Any | None = None
+    te2_adapter: Any | None = None
+    # Only inject adapter layers if rank/dim is specified
     if lora_rank is not None:
-        text_encoder_1 = inject_lora_into_text_encoder(
-            text_encoder_1, rank=lora_rank, alpha=lora_alpha
-        ).to(device)
-        text_encoder_2 = inject_lora_into_text_encoder(
-            text_encoder_2, rank=lora_rank, alpha=lora_alpha
-        ).to(device)
+        if adapter == "lora":
+            text_encoder_1 = inject_lora_into_text_encoder(
+                text_encoder_1, rank=lora_rank, alpha=lora_alpha
+            ).to(device)
+            text_encoder_2 = inject_lora_into_text_encoder(
+                text_encoder_2, rank=lora_rank, alpha=lora_alpha
+            ).to(device)
+        elif adapter == "lycoris":
+            te1_adapter = apply_lycoris_adapter(
+                text_encoder_1,
+                linear_dim=lycoris_dim or lora_rank,
+                linear_alpha=lycoris_alpha or lora_alpha,
+                algo=lycoris_algo,
+            )
+            te2_adapter = apply_lycoris_adapter(
+                text_encoder_2,
+                linear_dim=lycoris_dim or lora_rank,
+                linear_alpha=lycoris_alpha or lora_alpha,
+                algo=lycoris_algo,
+            )
+            text_encoder_1 = text_encoder_1.to(device)
+            text_encoder_2 = text_encoder_2.to(device)
+        else:
+            raise ValueError(f"Unknown adapter type: {adapter}")
     else:
         text_encoder_1 = text_encoder_1.to(device)
         text_encoder_2 = text_encoder_2.to(device)
 
-    # Freeze text encoders
-    text_encoder_1.requires_grad_(False)
-    text_encoder_2.requires_grad_(False)
-
-    return text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2
+    return text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, (te1_adapter, te2_adapter)
 
 
 def select_lora_params(model: nn.Module) -> Iterator[nn.Parameter]:
@@ -684,4 +780,5 @@ def load_model(checkpoint: str, device: str = "cpu") -> nn.Module:
         Model instance with LoRA injected
     """
     # Default to fp32 for compatibility
-    return load_sdxl_unet(checkpoint, device=device, dtype=torch.float32)
+    model, _ = load_sdxl_unet(checkpoint, device=device, dtype=torch.float32)
+    return model

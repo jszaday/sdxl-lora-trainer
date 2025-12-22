@@ -16,7 +16,7 @@ from .utils import set_seed
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="SDXL LoRA Sampler - generate images from structured prompts",
+        description="SDXL LoRA/LyCORIS Sampler - generate images from structured prompts",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -88,6 +88,13 @@ def parse_args() -> argparse.Namespace:
 
     lora_group = parser.add_argument_group("LoRA arguments")
     lora_group.add_argument(
+        "--adapter",
+        type=str,
+        default="lora",
+        choices=["lora", "lycoris"],
+        help="Adapter backend to attach before sampling (default: lora)",
+    )
+    lora_group.add_argument(
         "--lora_rank",
         type=int,
         default=None,
@@ -98,6 +105,24 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help=f"LoRA alpha scaling parameter (default: {TrainingConfig.lora_alpha} if not provided)",
+    )
+    lora_group.add_argument(
+        "--lycoris_algo",
+        type=str,
+        default="lokr",
+        help="LyCORIS algorithm when adapter=lycoris (default: lokr)",
+    )
+    lora_group.add_argument(
+        "--lycoris_dim",
+        type=int,
+        default=None,
+        help="LyCORIS linear_dim (defaults to lora_rank or TrainingConfig.lora_rank)",
+    )
+    lora_group.add_argument(
+        "--lycoris_alpha",
+        type=float,
+        default=None,
+        help="LyCORIS linear_alpha (defaults to lora_alpha or TrainingConfig.lora_alpha)",
     )
     lora_group.add_argument(
         "--lora_checkpoint",
@@ -165,7 +190,7 @@ def main() -> None:
 
     # Optionally detect LoRA rank from checkpoint before loading UNet
     detected_rank: int | None = None
-    if args.lora_checkpoint is not None:
+    if args.adapter == "lora" and args.lora_checkpoint is not None:
         try:
             state = torch.load(args.lora_checkpoint, map_location="cpu")
             if isinstance(state, dict) and "model_state_dict" in state:
@@ -207,47 +232,95 @@ def main() -> None:
 
     effective_rank = args.lora_rank or detected_rank or TrainingConfig.lora_rank
     effective_alpha = args.lora_alpha if args.lora_alpha is not None else TrainingConfig.lora_alpha
-    if args.lora_alpha is None and detected_rank is not None and args.lora_rank is None:
-        print(
-            f"Using detected lora_rank={effective_rank}; lora_alpha defaulting to {effective_alpha}"
-        )
+    if args.adapter == "lora":
+        if args.lora_alpha is None and detected_rank is not None and args.lora_rank is None:
+            print(
+                f"Using detected lora_rank={effective_rank}; "
+                f"lora_alpha defaulting to {effective_alpha}"
+            )
+    effective_lyco_dim = args.lycoris_dim or effective_rank
+    effective_lyco_alpha = args.lycoris_alpha if args.lycoris_alpha is not None else effective_alpha
 
     # Load models
     print(f"\nLoading UNet from: {args.checkpoint}")
-    unet = load_sdxl_unet(
+    unet, unet_adapter = load_sdxl_unet(
         checkpoint_or_model_id=args.checkpoint,
         device=device,
         dtype=dtype,
         lora_rank=effective_rank,
         lora_alpha=effective_alpha,
+        adapter=args.adapter,
+        lycoris_dim=effective_lyco_dim,
+        lycoris_alpha=effective_lyco_alpha,
+        lycoris_algo=args.lycoris_algo,
     )
 
     print("Loading VAE...")
     vae = load_vae(args.checkpoint, device=device, dtype=dtype)
 
     print("Loading text encoders...")
-    text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2 = load_text_encoders(
+    (
+        text_encoder_1,
+        text_encoder_2,
+        tokenizer_1,
+        tokenizer_2,
+        (te1_adapter, te2_adapter),
+    ) = load_text_encoders(
         args.checkpoint,
         device=device,
         dtype=dtype,
         lora_rank=effective_rank,
         lora_alpha=effective_alpha,
+        adapter=args.adapter,
+        lycoris_dim=effective_lyco_dim,
+        lycoris_alpha=effective_lyco_alpha,
+        lycoris_algo=args.lycoris_algo,
     )
 
     if args.lora_checkpoint is not None:
-        print(f"Loading LoRA weights from: {args.lora_checkpoint}")
-        try:
-            from lora_trainer.model import load_lora_weights
+        if args.adapter == "lycoris":
+            print(f"Loading LyCORIS weights from: {args.lora_checkpoint}")
+            try:
+                checkpoint = torch.load(args.lora_checkpoint, map_location=device)
+            except Exception as e:
+                print(f"Error loading LyCORIS checkpoint: {e}")
+                sys.exit(1)
 
-            load_lora_weights(
-                args.lora_checkpoint,
-                unet=unet,
-                text_encoder_1=text_encoder_1,
-                text_encoder_2=text_encoder_2,
+            model_state = (
+                checkpoint.get("model_state_dict", checkpoint)
+                if isinstance(checkpoint, dict)
+                else checkpoint
             )
-        except Exception as e:
-            print(f"Error loading LoRA weights: {e}")
-            sys.exit(1)
+            unet.load_state_dict(model_state, strict=False)
+
+            te1_state = (
+                checkpoint.get("text_encoder_1_state_dict")
+                if isinstance(checkpoint, dict)
+                else None
+            )
+            te2_state = (
+                checkpoint.get("text_encoder_2_state_dict")
+                if isinstance(checkpoint, dict)
+                else None
+            )
+            if text_encoder_1 is not None and te1_state is not None:
+                text_encoder_1.load_state_dict(te1_state, strict=False)
+            if text_encoder_2 is not None and te2_state is not None:
+                text_encoder_2.load_state_dict(te2_state, strict=False)
+        else:
+            print(f"Loading LoRA weights from: {args.lora_checkpoint}")
+            try:
+                from lora_trainer.model import load_lora_weights
+
+                load_lora_weights(
+                    args.lora_checkpoint,
+                    unet=unet,
+                    text_encoder_1=text_encoder_1,
+                    text_encoder_2=text_encoder_2,
+                )
+            except Exception as e:
+                print(f"Error loading LoRA weights: {e}")
+                sys.exit(1)
 
     config_like = SimpleNamespace(
         scheduler=args.scheduler,

@@ -203,11 +203,12 @@ Goal: Replace the dummy model with **real SDXL UNet + LoRA** using `diffusers` /
 
 * `model.py`:
 
-  * `load_sdxl_unet(checkpoint_or_model_id, device, dtype)` using diffusers.
-  * LoRA injection:
+  * `load_sdxl_unet(checkpoint_or_model_id, device, dtype, adapter)` now returns `(unet, adapter_handle)` and supports LyCORIS in addition to LoRA.
+  * Adapter injection:
 
     * Utility to attach LoRA modules to target layers (e.g., specific attention and feedforward modules).
     * `select_lora_params()` returns only LoRA parameters.
+    * LyCORIS helper wraps `create_lycoris` with defaults.
   * Optional `--lora_rank`, `--lora_alpha` if needed, but keep the flag set small and obvious.
 
 * `train_loop.py`:

@@ -280,9 +280,10 @@ def test_load_lora_weights_applies_to_unet_and_text_encoders(tmp_path):
 
 def test_lora_round_trip_export_and_import(tmp_path):
     """Test complete round-trip: extract -> convert -> save -> load -> verify."""
+    from safetensors.torch import save_file
+
     from lora_converter.converter import convert_lora_state
     from lora_trainer.model import LoRAConv2d, extract_lora_state_dict
-    from safetensors.torch import save_file
 
     # Create models with LoRA (alpha=32.0)
     class DummyAttn(nn.Module):
@@ -295,9 +296,7 @@ def test_lora_round_trip_export_and_import(tmp_path):
         def __init__(self):
             super().__init__()
             self.attn = DummyAttn()
-            self.conv1 = LoRAConv2d(
-                nn.Conv2d(3, 16, 3, padding=1), rank=8, alpha=32.0
-            )
+            self.conv1 = LoRAConv2d(nn.Conv2d(3, 16, 3, padding=1), rank=8, alpha=32.0)
 
     class DummyUNet(nn.Module):
         def __init__(self):
@@ -388,9 +387,7 @@ def test_lora_round_trip_export_and_import(tmp_path):
     assert torch.allclose(
         unet2.block.attn.to_q.lora_up.weight, unet1.block.attn.to_q.lora_up.weight
     )
-    assert torch.allclose(
-        unet2.block.conv1.lora_down.weight, unet1.block.conv1.lora_down.weight
-    )
+    assert torch.allclose(unet2.block.conv1.lora_down.weight, unet1.block.conv1.lora_down.weight)
     assert torch.allclose(
         te1_2.self_attn.q_proj.lora_down.weight,
         te1_1.self_attn.q_proj.lora_down.weight,
@@ -405,12 +402,8 @@ def test_lora_round_trip_export_and_import(tmp_path):
     # Step 9: Verify all LoRA modules have correct alpha
     for name, module in unet2.named_modules():
         if isinstance(module, (LoRALayer, LoRAConv2d)):
-            assert (
-                module.alpha == 32.0
-            ), f"Module {name} has alpha={module.alpha}, expected 32.0"
+            assert module.alpha == 32.0, f"Module {name} has alpha={module.alpha}, expected 32.0"
 
     for name, module in te1_2.named_modules():
         if isinstance(module, LoRALayer):
-            assert (
-                module.alpha == 32.0
-            ), f"Module {name} has alpha={module.alpha}, expected 32.0"
+            assert module.alpha == 32.0, f"Module {name} has alpha={module.alpha}, expected 32.0"

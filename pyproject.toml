@@ -14,6 +14,7 @@ dependencies = [
     "diffusers>=0.25.0",
     "transformers>=4.35.0",
     "accelerate>=0.24.0",
+    "lycoris-lora>=3.4.0",
     "safetensors>=0.4.0",
     "pillow>=10.0.0",
     "tqdm>=4.66.0",

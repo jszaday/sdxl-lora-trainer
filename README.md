@@ -9,6 +9,7 @@ This is a focused SDXL LoRA trainer designed for ease of use with ComfyUI-style 
 - Clean CLI interface with familiar flags
 - Fast feedback via tqdm progress bars and TensorBoard
 - Periodic validation sample generation
+- Supports both classic LoRA and LyCORIS adapters
 - Well-tested, modular codebase
 
 ## Installation
@@ -121,14 +122,35 @@ JSONL is also supported (one JSON object per line). Each entry may include:
 - `--sample_clip_skip`: Clip skip for text_encoder_1 hidden states (1 = penultimate; default: 1)
 
 **LoRA:**
+- `--adapter`: Choose adapter backend: `lora` or `lycoris` (default: `lora`)
 - `--lora_rank`: Rank of LoRA matrices (default: 16)
 - `--lora_alpha`: LoRA alpha scaling (default: 16.0)
+- `--lycoris_algo`: LyCORIS algorithm when `--adapter lycoris` (default: `lokr`)
+- `--lycoris_dim`: LyCORIS `linear_dim` (defaults to `--lora_rank`)
+- `--lycoris_alpha`: LyCORIS `linear_alpha` (defaults to `--lora_alpha`)
 
 **Misc:**
 - `--device`: Device to use for training - `cuda`, `cpu`, `mps`, etc. (auto-detected if not specified)
 - `--seed`: Random seed (default: 42)
 - `--mixed_precision`: Mixed precision mode - `no`, `fp16`, `bf16` (default: fp16)
 - `--resume_from`: Checkpoint file or directory to resume training from. If a directory is given, the newest `.pt` file is picked.
+
+### LyCORIS Mode
+
+Switch to LyCORIS adapters with familiar knobs:
+
+```bash
+python -m lora_trainer.cli \
+  --checkpoint stabilityai/stable-diffusion-xl-base-1.0 \
+  --train_data /path/to/training/images \
+  --steps 5000 \
+  --batch_size 4 \
+  --workspace ./runs/my_lyco_experiment \
+  --adapter lycoris \
+  --lycoris_algo lokr \
+  --lycoris_dim 16 \
+  --lycoris_alpha 2.0
+```
 
 ### Standalone Sampler CLI
 
@@ -146,6 +168,7 @@ python -m lora_trainer.sampler_cli \
 
 - Supports the same prompt JSON/JSONL format as training.
 - Optional: `--lora_checkpoint` to load LoRA weights from a training checkpoint before sampling.
+- Pass `--adapter lycoris` (plus optional `--lycoris_*` flags) to sample with LyCORIS weights.
 - Outputs samples to `{workspace}/samples/` and logs images to `{workspace}/tb/`.
 
 ### LoRA Checkpoint Conversion

@@ -39,8 +39,12 @@ class TrainingConfig:
     sample_clip_skip: int = 1
 
     # LoRA parameters
+    adapter: str = "lora"  # "lora" or "lycoris"
     lora_rank: int = 16
     lora_alpha: float = 16.0
+    lycoris_algo: str = "lokr"
+    lycoris_dim: int | None = None
+    lycoris_alpha: float | None = None
 
     # Misc
     seed: int = 42
@@ -94,11 +98,26 @@ class TrainingConfig:
         if self.samples_per_prompt <= 0:
             raise ValueError(f"samples_per_prompt must be positive, got {self.samples_per_prompt}")
 
+        # Validate adapter type early
+        self.adapter = self.adapter.lower()
+        if self.adapter not in ("lora", "lycoris"):
+            raise ValueError(f"adapter must be 'lora' or 'lycoris', got {self.adapter}")
+
         # Validate LoRA parameters
         if self.lora_rank <= 0:
             raise ValueError(f"lora_rank must be positive, got {self.lora_rank}")
         if self.lora_alpha <= 0:
             raise ValueError(f"lora_alpha must be positive, got {self.lora_alpha}")
+
+        # Fill LyCORIS defaults from LoRA values if not provided
+        if self.lycoris_dim is None:
+            self.lycoris_dim = self.lora_rank
+        if self.lycoris_alpha is None:
+            self.lycoris_alpha = self.lora_alpha
+        if self.lycoris_dim <= 0:
+            raise ValueError(f"lycoris_dim must be positive, got {self.lycoris_dim}")
+        if self.lycoris_alpha <= 0:
+            raise ValueError(f"lycoris_alpha must be positive, got {self.lycoris_alpha}")
 
         # Validate image size
         if self.image_size <= 0 or self.image_size % 8 != 0:
@@ -152,20 +171,34 @@ class TrainingConfig:
             f"Learning Rate:       {self.learning_rate}",
             f"Optimizer:           {self.optimizer}",
             "",
+            f"Adapter:             {self.adapter}",
             f"LoRA Rank:           {self.lora_rank}",
             f"LoRA Alpha:          {self.lora_alpha}",
             "",
-            f"Image Size:          {self.image_size}x{self.image_size}",
-            f"Mixed Precision:     {self.mixed_precision}",
-            f"Seed:                {self.seed}",
-            f"Resume From:         {self.resume_from or 'None'}",
-            "",
-            f"Scheduler:           {self.scheduler}",
-            f"Sampler:             {self.sampler}",
-            f"CFG Scale:           {self.cfg}",
-            f"Sampler Steps:       {self.sampler_steps}",
-            f"Sample Every:        {self.sample_every} steps",
-            f"Samples per Prompt:  {self.samples_per_prompt}",
-            "=" * 60,
         ]
+        if self.adapter == "lycoris":
+            lines.extend(
+                [
+                    f"LyCORIS Algo:       {self.lycoris_algo}",
+                    f"LyCORIS Dim:        {self.lycoris_dim}",
+                    f"LyCORIS Alpha:      {self.lycoris_alpha}",
+                    "",
+                ]
+            )
+        lines.extend(
+            [
+                f"Image Size:          {self.image_size}x{self.image_size}",
+                f"Mixed Precision:     {self.mixed_precision}",
+                f"Seed:                {self.seed}",
+                f"Resume From:         {self.resume_from or 'None'}",
+                "",
+                f"Scheduler:           {self.scheduler}",
+                f"Sampler:             {self.sampler}",
+                f"CFG Scale:           {self.cfg}",
+                f"Sampler Steps:       {self.sampler_steps}",
+                f"Sample Every:        {self.sample_every} steps",
+                f"Samples per Prompt:  {self.samples_per_prompt}",
+                "=" * 60,
+            ]
+        )
         return "\n".join(lines)

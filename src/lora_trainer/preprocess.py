@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 
+from .bucketing import BucketConfig
 from .data import ImageFolderWithCaptions
 from .model import load_text_encoders, load_vae
 from .train_loop import encode_prompts
@@ -20,6 +21,7 @@ def preprocess_dataset(
     device: str = "cuda",
     dtype: torch.dtype = torch.float16,
     batch_size: int = 1,
+    bucket_config: BucketConfig | None = None,
 ) -> None:
     """Preprocess a dataset by caching latents and text embeddings.
 
@@ -27,10 +29,11 @@ def preprocess_dataset(
         train_data: Directory containing training images and captions
         cache_dir: Directory to save cached tensors
         checkpoint: Path to base SDXL checkpoint or HuggingFace model ID
-        image_size: Image size for preprocessing
+        image_size: Image size for preprocessing (used when bucketing is disabled)
         device: Device to use for encoding
         dtype: Data type for models
         batch_size: Batch size for preprocessing (higher = faster but more VRAM)
+        bucket_config: Optional bucket configuration for aspect-ratio bucketing
     """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -47,8 +50,11 @@ def preprocess_dataset(
         data_dir=train_data,
         image_size=image_size,
         center_crop=True,
+        bucket_config=bucket_config,
     )
     print(f"Found {len(dataset)} images")
+    if bucket_config and bucket_config.enabled:
+        print(f"Using aspect-ratio bucketing with {len(bucket_config.buckets)} buckets")
 
     # Load VAE
     print(f"\nLoading VAE from {checkpoint}...")
@@ -82,6 +88,7 @@ def preprocess_dataset(
             # Collect batch
             batch_items = []
             batch_captions = []
+            batch_time_ids = []
             batch_indices = []
 
             for i in range(idx, min(idx + batch_size, len(dataset))):
@@ -89,6 +96,9 @@ def preprocess_dataset(
                 batch_items.append(item["pixel_values"])
                 batch_captions.append(item["caption"])
                 batch_indices.append(i)
+                # Extract time_ids if available (bucketing enabled)
+                if "time_ids" in item:
+                    batch_time_ids.append(item["time_ids"])
 
             # Stack pixel values
             pixel_values = torch.stack(batch_items).to(device).to(dtype)
@@ -109,9 +119,20 @@ def preprocess_dataset(
 
             # Save each item in the batch
             for i, batch_idx in enumerate(batch_indices):
-                # Save latent
+                # Save latent (with time_ids if bucketing is enabled)
                 latent_path = latents_dir / f"{batch_idx:06d}.pt"
-                torch.save(latents[i].cpu(), latent_path)
+                if batch_time_ids:
+                    # New format: save as dict with time_ids
+                    torch.save(
+                        {
+                            "latent": latents[i].cpu(),
+                            "time_ids": batch_time_ids[i],
+                        },
+                        latent_path,
+                    )
+                else:
+                    # Old format: save just the tensor (backward compatibility)
+                    torch.save(latents[i].cpu(), latent_path)
 
                 # Save embeddings (both prompt and pooled)
                 embed_path = embeds_dir / f"{batch_idx:06d}.pt"
@@ -130,6 +151,9 @@ def preprocess_dataset(
         "image_size": image_size,
         "vae_scaling_factor": vae.config.scaling_factor,
         "checkpoint": checkpoint,
+        "bucketing_enabled": (
+            bucket_config is not None and bucket_config.enabled if bucket_config else False
+        ),
     }
     torch.save(metadata, metadata_path)
 

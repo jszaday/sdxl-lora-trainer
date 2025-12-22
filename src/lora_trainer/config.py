@@ -27,6 +27,10 @@ class TrainingConfig:
     # Data parameters
     image_size: int = 1024  # SDXL native resolution
     num_workers: int = 4
+    enable_buckets: bool = True  # Enable aspect-ratio bucketing by default
+    bucket_min_dim: int = 512  # Minimum dimension for buckets
+    bucket_max_dim: int = 2048  # Maximum dimension for buckets
+    bucket_base_pixels: int = 1024 * 1024  # Target pixel count per bucket
 
     # Sampling/validation parameters
     scheduler: str = "normal"
@@ -188,6 +192,18 @@ class TrainingConfig:
         lines.extend(
             [
                 f"Image Size:          {self.image_size}x{self.image_size}",
+                f"Aspect Bucketing:    {'Enabled' if self.enable_buckets else 'Disabled'}",
+            ]
+        )
+        if self.enable_buckets:
+            lines.extend(
+                [
+                    f"  Bucket Range:      {self.bucket_min_dim}-{self.bucket_max_dim}px",
+                    f"  Base Pixels:       {self.bucket_base_pixels:,}",
+                ]
+            )
+        lines.extend(
+            [
                 f"Mixed Precision:     {self.mixed_precision}",
                 f"Seed:                {self.seed}",
                 f"Resume From:         {self.resume_from or 'None'}",

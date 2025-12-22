@@ -144,16 +144,22 @@ def train(
         if copy_stream is None:
             # No async copying - just move to device
             if is_cached:
-                return {
+                result = {
                     "latents": batch["latents"].to(device),
                     "prompt_embeds": batch["prompt_embeds"].to(device),
                     "pooled_embeds": batch["pooled_embeds"].to(device),
                 }
+                if "time_ids" in batch:
+                    result["time_ids"] = batch["time_ids"].to(device)
+                return result
             else:
-                return {
+                result = {
                     "pixel_values": batch["pixel_values"].to(device),
                     "caption": batch["caption"],
                 }
+                if "time_ids" in batch:
+                    result["time_ids"] = batch["time_ids"].to(device)
+                return result
 
         # Async copying with CUDA streams
         if is_cached:
@@ -162,10 +168,14 @@ def train(
                 result["latents"] = batch["latents"].to(device, non_blocking=True)
                 result["prompt_embeds"] = batch["prompt_embeds"].to(device, non_blocking=True)
                 result["pooled_embeds"] = batch["pooled_embeds"].to(device, non_blocking=True)
+                if "time_ids" in batch:
+                    result["time_ids"] = batch["time_ids"].to(device, non_blocking=True)
         else:
             result = {"caption": batch["caption"]}
             with torch.cuda.stream(copy_stream):
                 result["pixel_values"] = batch["pixel_values"].to(device, non_blocking=True)
+                if "time_ids" in batch:
+                    result["time_ids"] = batch["time_ids"].to(device, non_blocking=True)
         return result
 
     def _wait_for_batch():
@@ -231,9 +241,13 @@ def train(
                 # SDXL uses pooled embeddings as added_cond_kwargs
                 added_cond_kwargs = {"text_embeds": pooled_embeds}
                 # Add time_ids (original size, crops, target size)
-                time_ids = torch.tensor([[1024, 1024, 0, 0, 1024, 1024]], device=device).repeat(
-                    latents.shape[0], 1
-                )
+                if "time_ids" in batch:
+                    time_ids = batch["time_ids"].to(device)
+                else:
+                    # Fallback for backward compatibility with old caches
+                    time_ids = torch.tensor([[1024, 1024, 0, 0, 1024, 1024]], device=device).repeat(
+                        latents.shape[0], 1
+                    )
                 added_cond_kwargs["time_ids"] = time_ids
 
             elif use_real_diffusion:
@@ -259,9 +273,13 @@ def train(
                         # SDXL uses pooled embeddings as added_cond_kwargs
                         added_cond_kwargs = {"text_embeds": pooled_embeds}
                         # Add time_ids (original size, crops, target size)
-                        time_ids = torch.tensor(
-                            [[1024, 1024, 0, 0, 1024, 1024]], device=device
-                        ).repeat(latents.shape[0], 1)
+                        if "time_ids" in batch:
+                            time_ids = batch["time_ids"].to(device)
+                        else:
+                            # Fallback for backward compatibility
+                            time_ids = torch.tensor(
+                                [[1024, 1024, 0, 0, 1024, 1024]], device=device
+                            ).repeat(latents.shape[0], 1)
                         added_cond_kwargs["time_ids"] = time_ids
                     else:
                         # Fallback: use unconditional embeddings

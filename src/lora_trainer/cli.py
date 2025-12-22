@@ -6,6 +6,7 @@ from pathlib import Path
 
 import torch
 
+from .bucketing import BucketConfig
 from .config import TrainingConfig
 from .data import build_cached_dataloader, build_dataloader
 from .logging import create_run_dirs, init_tensorboard, log_hparams, write_config_yaml
@@ -112,6 +113,30 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=4,
         help="Number of data loading workers (default: 4)",
+    )
+    data_group.add_argument(
+        "--enable-buckets",
+        action="store_true",
+        default=True,
+        help="Enable aspect-ratio bucketing (default: True)",
+    )
+    data_group.add_argument(
+        "--no-buckets",
+        action="store_false",
+        dest="enable_buckets",
+        help="Disable aspect-ratio bucketing (use fixed image size)",
+    )
+    data_group.add_argument(
+        "--bucket-min-dim",
+        type=int,
+        default=512,
+        help="Minimum bucket dimension in pixels (default: 512)",
+    )
+    data_group.add_argument(
+        "--bucket-max-dim",
+        type=int,
+        default=2048,
+        help="Maximum bucket dimension in pixels (default: 2048)",
     )
 
     # Sampling/validation arguments
@@ -262,6 +287,9 @@ def main() -> None:
             optimizer=args.optimizer,
             image_size=args.image_size,
             num_workers=args.num_workers,
+            enable_buckets=args.enable_buckets,
+            bucket_min_dim=args.bucket_min_dim,
+            bucket_max_dim=args.bucket_max_dim,
             scheduler=args.scheduler,
             sampler=args.sampler,
             cfg=args.cfg,
@@ -286,6 +314,16 @@ def main() -> None:
 
     # Print configuration summary
     print(config.print_summary())
+
+    # Create bucket configuration
+    bucket_config = None
+    if config.enable_buckets:
+        bucket_config = BucketConfig(
+            enabled=True,
+            min_dimension=config.bucket_min_dim,
+            max_dimension=config.bucket_max_dim,
+            base_pixel_count=config.bucket_base_pixels,
+        )
 
     # Set random seed
     set_seed(config.seed)
@@ -340,6 +378,7 @@ def main() -> None:
                 device=device,
                 dtype=dtype,
                 batch_size=4,  # Use batch size 4 for preprocessing
+                bucket_config=bucket_config,
             )
             print("\n✓ Preprocessing complete!\n")
 
@@ -358,6 +397,7 @@ def main() -> None:
             batch_size=config.batch_size,
             image_size=config.image_size,
             num_workers=config.num_workers,
+            bucket_config=bucket_config,
         )
         print(f"Dataset size: {len(dataloader.dataset)} images")
         print(f"Batches per epoch: {len(dataloader)}")

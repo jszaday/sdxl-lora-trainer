@@ -79,6 +79,15 @@ def preprocess_dataset(
     text_encoder_1.eval()
     text_encoder_2.eval()
 
+    # When bucketing is enabled, force batch_size=1 since images have different sizes
+    if bucket_config and bucket_config.enabled:
+        if batch_size > 1:
+            print(
+                f"\nNote: Bucketing is enabled, processing images one at a time "
+                f"(batch_size forced to 1 from {batch_size})"
+            )
+            batch_size = 1
+
     print(f"\nPreprocessing dataset (batch_size={batch_size})...")
     print(f"Cache directory: {cache_dir}")
 
@@ -100,7 +109,7 @@ def preprocess_dataset(
                 if "time_ids" in item:
                     batch_time_ids.append(item["time_ids"])
 
-            # Stack pixel values
+            # Stack pixel values (all same size when batch_size=1 or no bucketing)
             pixel_values = torch.stack(batch_items).to(device).to(dtype)
 
             # Encode images to latents

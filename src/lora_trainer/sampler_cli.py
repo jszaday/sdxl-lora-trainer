@@ -131,6 +131,12 @@ def parse_args() -> argparse.Namespace:
         help="LyCORIS factorization factor (default: -1 for auto)",
     )
     lora_group.add_argument(
+        "--lycoris_dropout",
+        type=float,
+        default=None,
+        help="LyCORIS dropout (0-1, optional)",
+    )
+    lora_group.add_argument(
         "--lora_checkpoint",
         type=Path,
         default=None,
@@ -260,6 +266,7 @@ def main() -> None:
         lycoris_alpha=effective_lyco_alpha,
         lycoris_algo=args.lycoris_algo,
         lycoris_factor=args.lycoris_factor,
+        lycoris_dropout=args.lycoris_dropout,
     )
 
     print("Loading VAE...")
@@ -283,6 +290,7 @@ def main() -> None:
         lycoris_alpha=effective_lyco_alpha,
         lycoris_algo=args.lycoris_algo,
         lycoris_factor=args.lycoris_factor,
+        lycoris_dropout=args.lycoris_dropout,
     )
 
     if args.lora_checkpoint is not None:

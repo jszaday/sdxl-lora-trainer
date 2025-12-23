@@ -133,6 +133,58 @@ def test_invalid_cfg_negative(temp_data_dir):
         )
 
 
+def test_invalid_min_snr_gamma_negative(temp_data_dir):
+    """Test that negative min_snr_gamma raises ValueError."""
+    with pytest.raises(ValueError, match="min_snr_gamma must be non-negative"):
+        TrainingConfig(
+            checkpoint="dummy.safetensors",
+            train_data=temp_data_dir,
+            steps=100,
+            batch_size=4,
+            workspace=Path("/tmp/test"),
+            min_snr_gamma=-0.1,
+        )
+
+
+def test_invalid_lr_warmup_steps(temp_data_dir):
+    """Test that negative lr_warmup_steps raises ValueError."""
+    with pytest.raises(ValueError, match="lr_warmup_steps must be non-negative"):
+        TrainingConfig(
+            checkpoint="dummy.safetensors",
+            train_data=temp_data_dir,
+            steps=100,
+            batch_size=4,
+            workspace=Path("/tmp/test"),
+            lr_warmup_steps=-1,
+        )
+
+
+def test_invalid_lr_num_cycles(temp_data_dir):
+    """Test that non-positive lr_num_cycles raises ValueError."""
+    with pytest.raises(ValueError, match="lr_num_cycles must be positive"):
+        TrainingConfig(
+            checkpoint="dummy.safetensors",
+            train_data=temp_data_dir,
+            steps=100,
+            batch_size=4,
+            workspace=Path("/tmp/test"),
+            lr_num_cycles=0,
+        )
+
+
+def test_invalid_lr_power(temp_data_dir):
+    """Test that non-positive lr_power raises ValueError."""
+    with pytest.raises(ValueError, match="lr_power must be positive"):
+        TrainingConfig(
+            checkpoint="dummy.safetensors",
+            train_data=temp_data_dir,
+            steps=100,
+            batch_size=4,
+            workspace=Path("/tmp/test"),
+            lr_power=0.0,
+        )
+
+
 def test_invalid_lora_rank(temp_data_dir):
     """Test that invalid LoRA rank raises ValueError."""
     with pytest.raises(ValueError, match="lora_rank must be positive"):

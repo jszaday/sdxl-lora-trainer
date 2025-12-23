@@ -3,7 +3,7 @@
 import pytest
 from diffusers import DDIMScheduler, DDPMScheduler, EulerDiscreteScheduler
 
-from lora_trainer.schedulers import build_noise_scheduler, build_sampler
+from lora_trainer.schedulers import build_noise_scheduler
 
 
 def test_build_simple_scheduler():
@@ -45,37 +45,7 @@ def test_scheduler_error_message_includes_valid_options():
         build_noise_scheduler("bad_name")
 
 
-def test_build_euler_sampler():
-    """Test that 'euler' sampler is valid."""
-    sampler = build_sampler("euler", scheduler=None)
-    assert sampler == "euler"
-
-
-def test_build_euler_ancestral_sampler():
-    """Test that 'euler_ancestral' sampler is valid."""
-    sampler = build_sampler("euler_ancestral", scheduler=None)
-    assert sampler == "euler_ancestral"
-
-
-def test_build_ddim_sampler():
-    """Test that 'ddim' sampler is valid."""
-    sampler = build_sampler("ddim", scheduler=None)
-    assert sampler == "ddim"
-
-
-def test_build_heun_sampler():
-    """Test that 'heun' sampler is valid."""
-    sampler = build_sampler("heun", scheduler=None)
-    assert sampler == "heun"
-
-
-def test_unknown_sampler_raises_error():
-    """Test that unknown sampler name raises ValueError."""
-    with pytest.raises(ValueError, match="Unknown sampler"):
-        build_sampler("invalid_sampler", scheduler=None)
-
-
-def test_sampler_error_message_includes_valid_options():
-    """Test that error message lists valid sampler options."""
-    with pytest.raises(ValueError, match="ddim, euler, euler_ancestral, heun"):
-        build_sampler("bad_sampler", scheduler=None)
+def test_build_normal_scheduler_with_sampler():
+    """Test that 'normal' config adjusts scheduler per sampler name."""
+    scheduler = build_noise_scheduler("normal", num_inference_steps=50, sampler_name="heun")
+    assert scheduler.config.timestep_spacing == "linspace"

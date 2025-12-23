@@ -35,14 +35,14 @@ def temp_image_dir():
 def test_dataset_size(temp_image_dir):
     """Test that dataset size matches number of images."""
     bucket_config = BucketConfig()
-    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config, image_size=128)
+    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config)
     assert len(dataset) == 5
 
 
 def test_dataset_getitem_returns_correct_keys(temp_image_dir):
     """Test that dataset returns expected dictionary keys."""
     bucket_config = BucketConfig()
-    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config, image_size=128)
+    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config)
     sample = dataset[0]
 
     assert "pixel_values" in sample
@@ -54,9 +54,7 @@ def test_dataset_pixel_values_shape(temp_image_dir):
     image_size = 128
     # Use single bucket mode to get fixed size images
     bucket_config = BucketConfig(num_buckets=1, train_width=image_size, train_height=image_size)
-    dataset = ImageFolderWithCaptions(
-        temp_image_dir, bucket_config=bucket_config, image_size=image_size
-    )
+    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config)
     sample = dataset[0]
 
     pixel_values = sample["pixel_values"]
@@ -67,7 +65,7 @@ def test_dataset_pixel_values_shape(temp_image_dir):
 def test_dataset_pixel_values_normalized(temp_image_dir):
     """Test that pixel values are normalized to [-1, 1]."""
     bucket_config = BucketConfig()
-    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config, image_size=128)
+    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config)
     sample = dataset[0]
 
     pixel_values = sample["pixel_values"]
@@ -78,7 +76,7 @@ def test_dataset_pixel_values_normalized(temp_image_dir):
 def test_dataset_caption_with_text_file(temp_image_dir):
     """Test that captions are loaded from .txt files."""
     bucket_config = BucketConfig()
-    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config, image_size=128)
+    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config)
 
     # Image 0 should have a caption file
     sample = dataset[0]
@@ -88,7 +86,7 @@ def test_dataset_caption_with_text_file(temp_image_dir):
 def test_dataset_caption_without_text_file(temp_image_dir):
     """Test that missing captions default to empty string."""
     bucket_config = BucketConfig()
-    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config, image_size=128)
+    dataset = ImageFolderWithCaptions(temp_image_dir, bucket_config=bucket_config)
 
     # Image 1 doesn't have a caption file
     sample = dataset[1]
@@ -102,7 +100,7 @@ def test_dataset_empty_directory():
     try:
         bucket_config = BucketConfig()
         with pytest.raises(ValueError, match="No images found"):
-            ImageFolderWithCaptions(temp_dir, bucket_config=bucket_config, image_size=128)
+            ImageFolderWithCaptions(temp_dir, bucket_config=bucket_config)
     finally:
         shutil.rmtree(temp_dir)
 
@@ -115,7 +113,6 @@ def test_dataloader_batch_size(temp_image_dir):
         data_dir=temp_image_dir,
         batch_size=batch_size,
         bucket_config=bucket_config,
-        image_size=128,
         num_workers=0,  # Use 0 for testing
     )
 
@@ -131,7 +128,6 @@ def test_dataloader_iterations(temp_image_dir):
         data_dir=temp_image_dir,
         batch_size=batch_size,
         bucket_config=bucket_config,
-        image_size=128,
         num_workers=0,
         shuffle=False,
     )
@@ -148,7 +144,6 @@ def test_dataloader_pin_memory_with_cuda(temp_image_dir):
         data_dir=temp_image_dir,
         batch_size=2,
         bucket_config=bucket_config,
-        image_size=128,
         num_workers=0,
     )
 

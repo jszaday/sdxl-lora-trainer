@@ -87,6 +87,44 @@ def parse_args() -> argparse.Namespace:
         default="adamw",
         help="Optimizer spec, e.g., adamw or prodigy(lr=1e-4, weight_decay=0)",
     )
+    optim_group.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default="constant",
+        choices=[
+            "constant",
+            "constant_with_warmup",
+            "linear",
+            "cosine",
+            "cosine_with_restarts",
+            "polynomial",
+        ],
+        help="Learning rate scheduler for training (default: constant)",
+    )
+    optim_group.add_argument(
+        "--lr_warmup_steps",
+        type=int,
+        default=0,
+        help="Warmup steps for LR scheduler (default: 0)",
+    )
+    optim_group.add_argument(
+        "--lr_num_cycles",
+        type=int,
+        default=1,
+        help="Number of cycles for cosine_with_restarts (default: 1)",
+    )
+    optim_group.add_argument(
+        "--lr_power",
+        type=float,
+        default=1.0,
+        help="Power factor for polynomial scheduler (default: 1.0)",
+    )
+    optim_group.add_argument(
+        "--min_snr_gamma",
+        type=float,
+        default=None,
+        help="Enable min-SNR loss weighting when set (e.g., 5.0)",
+    )
 
     # Data arguments
     data_group = parser.add_argument_group("data arguments")
@@ -243,6 +281,12 @@ def parse_args() -> argparse.Namespace:
         default=-1,
         help="LyCORIS factorization factor (default: -1 for auto)",
     )
+    lora_group.add_argument(
+        "--lycoris_dropout",
+        type=float,
+        default=None,
+        help="LyCORIS dropout (0-1, optional)",
+    )
 
     # Misc arguments
     misc_group = parser.add_argument_group("misc arguments")
@@ -304,6 +348,10 @@ def main() -> None:
             learning_rate=args.learning_rate,
             grad_accum=args.grad_accum,
             optimizer=args.optimizer,
+            lr_scheduler=args.lr_scheduler,
+            lr_warmup_steps=args.lr_warmup_steps,
+            lr_num_cycles=args.lr_num_cycles,
+            lr_power=args.lr_power,
             image_size=args.image_size,
             num_workers=args.num_workers,
             num_buckets=args.num_buckets,
@@ -326,10 +374,12 @@ def main() -> None:
             lycoris_dim=args.lycoris_dim,
             lycoris_alpha=args.lycoris_alpha,
             lycoris_factor=args.lycoris_factor,
+            lycoris_dropout=args.lycoris_dropout,
             seed=args.seed,
             log_every=args.log_every,
             mixed_precision=args.mixed_precision,
             resume_from=args.resume_from,
+            min_snr_gamma=args.min_snr_gamma,
         )
     except ValueError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
@@ -436,7 +486,7 @@ def main() -> None:
 
     # Import model loading functions
     from .model import load_sdxl_unet, load_text_encoders, load_vae, select_lora_params
-    from .optim import build_optimizer
+    from .optim import build_lr_scheduler, build_optimizer
 
     model, unet_adapter = load_sdxl_unet(
         config.checkpoint,
@@ -449,11 +499,13 @@ def main() -> None:
         lycoris_alpha=config.lycoris_alpha,
         lycoris_algo=config.lycoris_algo,
         lycoris_factor=config.lycoris_factor,
+        lycoris_dropout=config.lycoris_dropout,
     )
 
     # Enable gradient checkpointing if requested
     if args.gradient_checkpointing:
         model.enable_gradient_checkpointing()
+        # TODO: enable gradient checkpointing for text encoders when training on-the-fly.
         print("Gradient checkpointing enabled (saves VRAM, ~20% slower)")
 
     # Load VAE and text encoders based on caching mode
@@ -476,6 +528,7 @@ def main() -> None:
             lycoris_alpha=config.lycoris_alpha,
             lycoris_algo=config.lycoris_algo,
             lycoris_factor=config.lycoris_factor,
+            lycoris_dropout=config.lycoris_dropout,
         )
     else:
         print("\nLoading VAE...")
@@ -499,6 +552,7 @@ def main() -> None:
             lycoris_alpha=config.lycoris_alpha,
             lycoris_algo=config.lycoris_algo,
             lycoris_factor=config.lycoris_factor,
+            lycoris_dropout=config.lycoris_dropout,
         )
 
     # Collect adapter parameters - UNet only when using cached data
@@ -545,6 +599,14 @@ def main() -> None:
         spec=config.optimizer,
         base_lr=config.learning_rate,
     )
+    lr_scheduler = build_lr_scheduler(
+        optimizer=optimizer,
+        name=config.lr_scheduler,
+        num_training_steps=config.steps,
+        num_warmup_steps=config.lr_warmup_steps,
+        num_cycles=config.lr_num_cycles,
+        power=config.lr_power,
+    )
 
     # Resume from checkpoint if requested
     resume_step = 0
@@ -555,6 +617,7 @@ def main() -> None:
             checkpoint_path=resume_path,
             model=model,
             optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
             device=device,
             text_encoder_1=text_encoder_1,
             text_encoder_2=text_encoder_2,
@@ -576,6 +639,7 @@ def main() -> None:
         model=model,
         dataloader=dataloader,
         optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
         config=config,
         dirs=dirs,
         writer=writer,

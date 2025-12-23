@@ -64,15 +64,21 @@ def log_hparams(writer: SummaryWriter, config: Any) -> None:
         "grad_accum": config.grad_accum,
         "effective_batch": config.effective_batch_size,
         "steps": config.steps,
+        "lr_scheduler": config.lr_scheduler,
+        "lr_warmup_steps": config.lr_warmup_steps,
+        "lr_num_cycles": config.lr_num_cycles,
+        "lr_power": config.lr_power,
         "num_epochs": config.num_epochs,
         "lora_rank": config.lora_rank,
         "lora_alpha": config.lora_alpha,
+        "lycoris_dropout": config.lycoris_dropout,
         "image_size": config.image_size,
         "scheduler": config.scheduler,
         "sampler": config.sampler,
         "cfg": config.cfg,
         "sampler_steps": config.sampler_steps,
         "seed": config.seed,
+        "min_snr_gamma": config.min_snr_gamma,
     }
 
     writer.add_hparams(hparams, {})

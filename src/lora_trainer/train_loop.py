@@ -2,10 +2,12 @@
 
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 from diffusers import DDPMScheduler
+from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
@@ -14,6 +16,9 @@ from lora_converter.converter import convert_lora_state
 
 from .logging import log_perf_metrics
 from .sampling import run_validation_samples
+
+if TYPE_CHECKING:
+    from .config import TrainingConfig
 
 
 def encode_prompts(
@@ -78,9 +83,10 @@ def train(
     model: nn.Module,
     dataloader: DataLoader,
     optimizer: torch.optim.Optimizer,
-    config,  # TrainingConfig
+    config: "TrainingConfig",
     dirs: dict[str, Path],
     writer: SummaryWriter,
+    lr_scheduler: LRScheduler | None = None,
     device: str = "cuda",
     vae=None,
     text_encoder_1=None,
@@ -121,6 +127,7 @@ def train(
         num_train_timesteps=1000,
         prediction_type="epsilon",  # Predict noise
     )
+    alphas_cumprod = noise_scheduler.alphas_cumprod.to(device)
 
     # Determine if we're using real diffusion (on-the-fly encoding)
     use_real_diffusion = vae is not None and not cached_data
@@ -309,7 +316,18 @@ def train(
                     noise_pred = model(noisy_latents, timesteps, prompt_embeds).sample
 
                 # Compute diffusion loss
-                loss = torch.nn.functional.mse_loss(noise_pred, noise)
+                if config.min_snr_gamma is not None and config.min_snr_gamma > 0:
+                    # Min-SNR weighting (epsilon prediction)
+                    snr = alphas_cumprod[timesteps]
+                    snr = snr / (1 - alphas_cumprod[timesteps])
+                    gamma = torch.full_like(snr, config.min_snr_gamma)
+                    weights = torch.minimum(snr, gamma) / snr
+                    per_sample = torch.nn.functional.mse_loss(
+                        noise_pred, noise, reduction="none"
+                    ).mean(dim=tuple(range(1, noise_pred.ndim)))
+                    loss = (per_sample * weights).mean()
+                else:
+                    loss = torch.nn.functional.mse_loss(noise_pred, noise)
 
             else:
                 raise RuntimeError(
@@ -325,6 +343,8 @@ def train(
             # Update weights every grad_accum steps
             if (batch_idx + 1) % config.grad_accum == 0:
                 optimizer.step()
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
                 optimizer.zero_grad()
 
                 global_step += 1
@@ -341,10 +361,10 @@ def train(
                     accumulated_losses.clear()
 
                     # Log other metrics
-                    effective_lr = optimizer.param_groups[0]["lr"]
-                    tracked_lr = getattr(optimizer, "learning_rate", None)
-                    if tracked_lr is not None:
-                        effective_lr = tracked_lr
+                    if lr_scheduler is not None:
+                        effective_lr = lr_scheduler.get_last_lr()[0]
+                    else:
+                        effective_lr = optimizer.param_groups[0]["lr"]
                     writer.add_scalar("train/lr", effective_lr, global_step)
                     writer.add_scalar("train/epoch", current_epoch, global_step)
 
@@ -374,6 +394,7 @@ def train(
                     save_checkpoint(
                         model=model,
                         optimizer=optimizer,
+                        lr_scheduler=lr_scheduler,
                         global_step=global_step,
                         checkpoint_dir=dirs["checkpoints"],
                         lora_rank=config.lora_rank,
@@ -425,6 +446,7 @@ def train(
     save_checkpoint(
         model=model,
         optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
         global_step=global_step,
         checkpoint_dir=dirs["checkpoints"],
         is_final=True,
@@ -451,6 +473,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     global_step: int,
     checkpoint_dir: Path,
+    lr_scheduler: LRScheduler | None = None,
     is_final: bool = False,
     skip_step_save: bool = False,
     lora_rank: int | None = None,
@@ -487,6 +510,7 @@ def save_checkpoint(
 
     checkpoint = {
         "optimizer_state_dict": optimizer.state_dict(),
+        "lr_scheduler_state_dict": lr_scheduler.state_dict() if lr_scheduler else None,
         "global_step": global_step,
         "adapter_type": adapter_type,
     }
@@ -595,6 +619,7 @@ def load_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer | None,
     device: str,
+    lr_scheduler: LRScheduler | None = None,
     text_encoder_1: nn.Module | None = None,
     text_encoder_2: nn.Module | None = None,
     unet_adapter=None,
@@ -656,5 +681,8 @@ def load_checkpoint(
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         print("  Loaded optimizer state")
+    if lr_scheduler is not None and checkpoint.get("lr_scheduler_state_dict") is not None:
+        lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
+        print("  Loaded lr scheduler state")
 
     return int(checkpoint.get("global_step", 0))

@@ -3,6 +3,7 @@
 Phase 2: Real SDXL UNet loading with LoRA injection.
 """
 
+import inspect
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -38,6 +39,7 @@ def apply_lycoris_adapter(
     linear_alpha: float,
     algo: str = "lokr",
     factor: int = -1,
+    dropout: float | None = None,
     device: str = "cpu",
     preset: dict[str, list[str]] | None = None,
     multiplier: float = 1.0,
@@ -52,14 +54,24 @@ def apply_lycoris_adapter(
 
     # Freeze base weights and create LyCORIS layers
     model.requires_grad_(False)
-    lyco_net = create_lycoris(
-        model,
-        multiplier,
-        linear_dim=linear_dim,
-        linear_alpha=linear_alpha,
-        algo=algo,
-        factor=factor,
-    )
+    kwargs = {
+        "linear_dim": linear_dim,
+        "linear_alpha": linear_alpha,
+        "algo": algo,
+        "factor": factor,
+    }
+    if dropout is not None:
+        params = inspect.signature(create_lycoris).parameters
+        if "dropout" in params:
+            kwargs["dropout"] = dropout
+        elif "rank_dropout" in params:
+            kwargs["rank_dropout"] = dropout
+        elif "module_dropout" in params:
+            kwargs["module_dropout"] = dropout
+        else:
+            print("Warning: LyCORIS dropout requested but not supported by this version.")
+
+    lyco_net = create_lycoris(model, multiplier, **kwargs)
     lyco_net.apply_to()
 
     # Move LyCORIS parameters to the same device as the model
@@ -319,6 +331,7 @@ def load_sdxl_unet(
     lycoris_alpha: float | None = None,
     lycoris_algo: str = "lokr",
     lycoris_factor: int = -1,
+    lycoris_dropout: float | None = None,
 ) -> tuple[UNet2DConditionModel, Any | None]:
     """Load SDXL UNet and inject LoRA layers.
 
@@ -333,6 +346,7 @@ def load_sdxl_unet(
         lycoris_alpha: LyCORIS alpha (defaults to lora_alpha)
         lycoris_algo: LyCORIS algorithm (e.g., 'lokr')
         lycoris_factor: LyCORIS factorization factor (-1 = auto)
+        lycoris_dropout: LyCORIS dropout (optional)
 
     Returns:
         Tuple of (UNet with adapters, adapter handle or None)
@@ -369,6 +383,7 @@ def load_sdxl_unet(
             linear_alpha=lycoris_alpha or lora_alpha,
             algo=lycoris_algo,
             factor=lycoris_factor,
+            dropout=lycoris_dropout,
             device=device,
         )
     else:
@@ -423,6 +438,7 @@ def load_text_encoders(
     lycoris_alpha: float | None = None,
     lycoris_algo: str = "lokr",
     lycoris_factor: int = -1,
+    lycoris_dropout: float | None = None,
 ) -> tuple[
     CLIPTextModel,
     CLIPTextModelWithProjection,
@@ -440,6 +456,7 @@ def load_text_encoders(
         dtype: Encoder dtype
         adapter: Adapter backend ('lora' or 'lycoris')
         lycoris_factor: LyCORIS factorization factor (-1 = auto)
+        lycoris_dropout: LyCORIS dropout (optional)
 
     Returns:
         Tuple of (text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, adapter handles)
@@ -508,6 +525,7 @@ def load_text_encoders(
                 linear_alpha=lycoris_alpha or lora_alpha,
                 algo=lycoris_algo,
                 factor=lycoris_factor,
+                dropout=lycoris_dropout,
                 device=device,
             )
             te2_adapter = apply_lycoris_adapter(
@@ -516,6 +534,7 @@ def load_text_encoders(
                 linear_alpha=lycoris_alpha or lora_alpha,
                 algo=lycoris_algo,
                 factor=lycoris_factor,
+                dropout=lycoris_dropout,
                 device=device,
             )
         else:

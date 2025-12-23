@@ -23,6 +23,10 @@ class TrainingConfig:
     learning_rate: float = 1e-4
     grad_accum: int = 1
     optimizer: str = "adamw"
+    lr_scheduler: str = "constant"
+    lr_warmup_steps: int = 0
+    lr_num_cycles: int = 1
+    lr_power: float = 1.0
 
     # Data parameters
     image_size: int = 1024  # SDXL native resolution
@@ -52,12 +56,14 @@ class TrainingConfig:
     lycoris_dim: int | None = None
     lycoris_alpha: float | None = None
     lycoris_factor: int = -1  # Factorization factor for LyCORIS (-1 = auto)
+    lycoris_dropout: float | None = None
 
     # Misc
     seed: int = 42
     mixed_precision: str = "fp16"  # "no", "fp16", "bf16"
     resume_from: Path | None = None  # Optional checkpoint path/dir to resume from
     log_every: int = 10  # Log metrics every N steps (reduces GPU sync overhead)
+    min_snr_gamma: float | None = None
 
     # Internal fields computed after init
     num_images: int = field(init=False, default=0)
@@ -84,6 +90,14 @@ class TrainingConfig:
             raise ValueError(f"grad_accum must be positive, got {self.grad_accum}")
         if self.learning_rate <= 0:
             raise ValueError(f"learning_rate must be positive, got {self.learning_rate}")
+        if self.lr_warmup_steps < 0:
+            raise ValueError(f"lr_warmup_steps must be non-negative, got {self.lr_warmup_steps}")
+        if self.lr_num_cycles <= 0:
+            raise ValueError(f"lr_num_cycles must be positive, got {self.lr_num_cycles}")
+        if self.lr_power <= 0:
+            raise ValueError(f"lr_power must be positive, got {self.lr_power}")
+        if self.min_snr_gamma is not None and self.min_snr_gamma < 0:
+            raise ValueError(f"min_snr_gamma must be non-negative, got {self.min_snr_gamma}")
 
         # Validate paths
         if not self.train_data.exists():
@@ -113,6 +127,9 @@ class TrainingConfig:
         if self.adapter not in ("lora", "lycoris"):
             raise ValueError(f"adapter must be 'lora' or 'lycoris', got {self.adapter}")
 
+        # Normalize lr scheduler name
+        self.lr_scheduler = self.lr_scheduler.lower()
+
         # Validate LoRA parameters
         if self.lora_rank <= 0:
             raise ValueError(f"lora_rank must be positive, got {self.lora_rank}")
@@ -128,6 +145,10 @@ class TrainingConfig:
             raise ValueError(f"lycoris_dim must be positive, got {self.lycoris_dim}")
         if self.lycoris_alpha <= 0:
             raise ValueError(f"lycoris_alpha must be positive, got {self.lycoris_alpha}")
+        if self.lycoris_dropout is not None and not (0.0 <= self.lycoris_dropout <= 1.0):
+            raise ValueError(
+                "lycoris_dropout must be between 0 and 1, " f"got {self.lycoris_dropout}"
+            )
 
         # Validate image size
         if self.image_size <= 0 or self.image_size % 8 != 0:
@@ -180,6 +201,10 @@ class TrainingConfig:
             f"Total Epochs:        {self.num_epochs}",
             f"Learning Rate:       {self.learning_rate}",
             f"Optimizer:           {self.optimizer}",
+            f"LR Scheduler:        {self.lr_scheduler}",
+            f"LR Warmup Steps:     {self.lr_warmup_steps}",
+            f"LR Cycles:           {self.lr_num_cycles}",
+            f"LR Power:            {self.lr_power}",
             "",
             f"Adapter:             {self.adapter}",
             f"LoRA Rank:           {self.lora_rank}",
@@ -193,6 +218,7 @@ class TrainingConfig:
                     f"LyCORIS Dim:        {self.lycoris_dim}",
                     f"LyCORIS Alpha:      {self.lycoris_alpha}",
                     f"LyCORIS Factor:     {self.lycoris_factor}",
+                    f"LyCORIS Dropout:    {self.lycoris_dropout or 'None'}",
                     "",
                 ]
             )
@@ -215,6 +241,7 @@ class TrainingConfig:
             [
                 f"Mixed Precision:     {self.mixed_precision}",
                 f"Seed:                {self.seed}",
+                f"Min SNR Gamma:       {self.min_snr_gamma or 'None'}",
                 f"Resume From:         {self.resume_from or 'None'}",
                 "",
                 f"Scheduler:           {self.scheduler}",

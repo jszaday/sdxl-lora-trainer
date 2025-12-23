@@ -3,7 +3,7 @@
 import ast
 
 import torch
-from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LRScheduler
 
 
 def parse_optimizer_spec(spec: str) -> tuple[str, dict]:
@@ -78,16 +78,17 @@ def build_optimizer(params, spec: str, base_lr: float) -> torch.optim.Optimizer:
 
     if name == "adafactor":
         try:
-            return AdafactorWithTracking(params, **kwargs)
+            from transformers.optimization import Adafactor
         except Exception as e:
             raise ImportError("Install/upgrade transformers to use adafactor optimizer") from e
+        return Adafactor(params, **kwargs)
 
     if name == "prodigy":
         try:
-            import prodigyopt  # noqa: F401
+            from prodigyopt import Prodigy
         except Exception as e:
             raise ImportError("Install prodigyopt to use prodigy optimizer") from e
-        return ProdigyWithTracking(params, **kwargs)
+        return Prodigy(params, **kwargs)
 
     supported = [
         "adamw",
@@ -100,104 +101,42 @@ def build_optimizer(params, spec: str, base_lr: float) -> torch.optim.Optimizer:
     raise ValueError(f"Unknown optimizer '{name}'. Supported: {', '.join(supported)}")
 
 
-class ProdigyWithTracking(Optimizer):
-    """Prodigy wrapper that records effective step size per step."""
+def build_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    name: str,
+    num_training_steps: int,
+    num_warmup_steps: int = 0,
+    num_cycles: int = 1,
+    power: float = 1.0,
+) -> LRScheduler:
+    """Build a training LR scheduler using transformers' get_scheduler."""
+    try:
+        from transformers.optimization import get_scheduler
+    except Exception as e:
+        raise ImportError("Install/upgrade transformers to use LR schedulers") from e
 
-    def __init__(self, params, *args, **kwargs):
-        from prodigyopt import Prodigy
+    scheduler_name = name.strip().lower()
+    supported = {
+        "constant",
+        "constant_with_warmup",
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+    }
+    if scheduler_name not in supported:
+        raise ValueError(
+            f"Unknown lr_scheduler '{name}'. Supported: {', '.join(sorted(supported))}"
+        )
 
-        # Track last effective lr
-        self.learning_rate: float | None = None
-        self._state_moved = False
+    kwargs = {
+        "optimizer": optimizer,
+        "num_warmup_steps": num_warmup_steps,
+        "num_training_steps": num_training_steps,
+    }
+    if scheduler_name == "cosine_with_restarts":
+        kwargs["num_cycles"] = num_cycles
+    if scheduler_name == "polynomial":
+        kwargs["power"] = power
 
-        # Instantiate inner optimizer
-        self.inner = Prodigy(params, *args, **kwargs)
-
-    @property
-    def param_groups(self):
-        return self.inner.param_groups
-
-    def state_dict(self):
-        return self.inner.state_dict()
-
-    def load_state_dict(self, state_dict):
-        return self.inner.load_state_dict(state_dict)
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        self.inner.step(closure)
-        self._record_learning_rate()
-        if not self._state_moved:
-            self._move_state_to_param_device()
-        return self.learning_rate
-
-    def zero_grad(self, set_to_none: bool = False):
-        return self.inner.zero_grad(set_to_none=set_to_none)
-
-    def _move_state_to_param_device(self):
-        """Ensure Prodigy state tensors sit on the same device as model params."""
-        for group in self.inner.param_groups:
-            if not group.get("params"):
-                continue
-            device = group["params"][0].device
-            for key in ("running_d_numerator", "running_d_denom"):
-                if key in group:
-                    group[key] = group[key].to(device)
-        self._state_moved = True
-
-    def _record_learning_rate(self):
-        """Capture an effective lr from Prodigy's param group state."""
-        for group in self.inner.param_groups:
-            if not group.get("params"):
-                continue
-            base_lr = group.get("lr")
-            d_scale = group.get("d")
-            if base_lr is None or d_scale is None:
-                continue
-            self.learning_rate = float(base_lr) * float(d_scale)
-            break
-
-
-class AdafactorWithTracking(Optimizer):
-    """Adafactor wrapper that records the effective lr used per step."""
-
-    def __init__(self, params, *args, **kwargs):
-        from transformers.optimization import Adafactor
-
-        self.inner = Adafactor(params, *args, **kwargs)
-        self.learning_rate: float | None = None
-
-    @property
-    def param_groups(self):
-        return self.inner.param_groups
-
-    def state_dict(self):
-        return self.inner.state_dict()
-
-    def load_state_dict(self, state_dict):
-        return self.inner.load_state_dict(state_dict)
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        loss = self.inner.step(closure)
-        self._record_lr()
-        return loss
-
-    def zero_grad(self, set_to_none: bool = False):
-        return self.inner.zero_grad(set_to_none=set_to_none)
-
-    def _record_lr(self):
-        """Capture the lr Adafactor computed for logging."""
-        for group in self.inner.param_groups:
-            if not group.get("params"):
-                continue
-            param = group["params"][0]
-            state = self.inner.state.get(param)
-            if state is None:
-                continue
-            try:
-                lr = self.inner._get_lr(group, state)
-            except Exception:
-                continue
-            self.learning_rate = lr
-            break
+    return get_scheduler(scheduler_name, **kwargs)

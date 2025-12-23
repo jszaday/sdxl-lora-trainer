@@ -62,19 +62,24 @@ def temp_data_dir():
 @pytest.fixture
 def dummy_dataloader():
     """Create a simple in-memory dataloader for testing."""
-    # Create fake data: [batch_size, channels, height, width]
-    pixel_values = torch.randn(20, 3, 64, 64)
-    captions = ["dummy caption"] * 20
+    # Create fake cached data: [batch_size, channels, height, width]
+    latents = torch.randn(20, 4, 64, 64)
+    prompt_embeds = torch.randn(20, 77, 2048)
+    pooled_embeds = torch.randn(20, 1280)
+    time_ids = torch.zeros(20, 6)
 
-    # Create a simple dataset
-    dataset = TensorDataset(pixel_values)
+    dataset = TensorDataset(latents, prompt_embeds, pooled_embeds, time_ids)
 
-    # Wrap in a dataloader
     def collate_fn(batch):
-        return {"pixel_values": batch[0][0].unsqueeze(0), "caption": captions[0]}
+        stacked = {
+            "latents": torch.stack([item[0] for item in batch]),
+            "prompt_embeds": torch.stack([item[1] for item in batch]),
+            "pooled_embeds": torch.stack([item[2] for item in batch]),
+            "time_ids": torch.stack([item[3] for item in batch]),
+        }
+        return stacked
 
-    dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
-    return dataloader
+    return DataLoader(dataset, batch_size=2, collate_fn=collate_fn, drop_last=True)
 
 
 def test_train_completes_requested_steps(temp_workspace, temp_data_dir):
@@ -96,14 +101,20 @@ def test_train_completes_requested_steps(temp_workspace, temp_data_dir):
     model = DummyUNet()
     optimizer = torch.optim.AdamW(select_lora_params_dummy(model), lr=1e-4)
 
-    # Create simple dataloader (use 4 channels like latent space)
-    pixel_values = torch.randn(20, 4, 64, 64)
-    dataset = TensorDataset(pixel_values)
+    # Create simple cached dataloader
+    latents = torch.randn(20, 4, 64, 64)
+    prompt_embeds = torch.randn(20, 77, 2048)
+    pooled_embeds = torch.randn(20, 1280)
+    time_ids = torch.zeros(20, 6)
+    dataset = TensorDataset(latents, prompt_embeds, pooled_embeds, time_ids)
 
     def collate_fn(batch):
-        # batch is a list of tuples [(tensor,), (tensor,), ...]
-        stacked = torch.stack([item[0] for item in batch])
-        return {"pixel_values": stacked, "caption": ["dummy"] * len(batch)}
+        return {
+            "latents": torch.stack([item[0] for item in batch]),
+            "prompt_embeds": torch.stack([item[1] for item in batch]),
+            "pooled_embeds": torch.stack([item[2] for item in batch]),
+            "time_ids": torch.stack([item[3] for item in batch]),
+        }
 
     dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn, drop_last=True)
 
@@ -116,6 +127,7 @@ def test_train_completes_requested_steps(temp_workspace, temp_data_dir):
         dirs=dirs,
         writer=writer,
         device="cpu",
+        cached_data=True,
     )
 
 
@@ -150,12 +162,19 @@ def test_train_logs_perf_metrics(temp_workspace, temp_data_dir):
     optimizer = torch.optim.AdamW(select_lora_params_dummy(model), lr=1e-4)
 
     # Simple dataloader matching dummy latent shape
-    pixel_values = torch.randn(8, 4, 64, 64)
-    dataset = TensorDataset(pixel_values)
+    latents = torch.randn(8, 4, 64, 64)
+    prompt_embeds = torch.randn(8, 77, 2048)
+    pooled_embeds = torch.randn(8, 1280)
+    time_ids = torch.zeros(8, 6)
+    dataset = TensorDataset(latents, prompt_embeds, pooled_embeds, time_ids)
 
     def collate_fn(batch):
-        stacked = torch.stack([item[0] for item in batch])
-        return {"pixel_values": stacked, "caption": ["dummy"] * len(batch)}
+        return {
+            "latents": torch.stack([item[0] for item in batch]),
+            "prompt_embeds": torch.stack([item[1] for item in batch]),
+            "pooled_embeds": torch.stack([item[2] for item in batch]),
+            "time_ids": torch.stack([item[3] for item in batch]),
+        }
 
     dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn, drop_last=True)
 
@@ -167,6 +186,7 @@ def test_train_logs_perf_metrics(temp_workspace, temp_data_dir):
         dirs=dirs,
         writer=writer,
         device="cpu",
+        cached_data=True,
     )
 
     tags = {tag for tag, _, _ in writer.scalars}
@@ -266,13 +286,19 @@ def test_model_parameters_update_during_training(temp_workspace, temp_data_dir):
     optimizer = torch.optim.AdamW(select_lora_params_dummy(model), lr=1e-3)
 
     # Create dataloader (use 4 channels like latent space)
-    pixel_values = torch.randn(20, 4, 64, 64)
-    dataset = TensorDataset(pixel_values)
+    latents = torch.randn(20, 4, 64, 64)
+    prompt_embeds = torch.randn(20, 77, 2048)
+    pooled_embeds = torch.randn(20, 1280)
+    time_ids = torch.zeros(20, 6)
+    dataset = TensorDataset(latents, prompt_embeds, pooled_embeds, time_ids)
 
     def collate_fn(batch):
-        # batch is a list of tuples [(tensor,), (tensor,), ...]
-        stacked = torch.stack([item[0] for item in batch])
-        return {"pixel_values": stacked, "caption": ["dummy"] * len(batch)}
+        return {
+            "latents": torch.stack([item[0] for item in batch]),
+            "prompt_embeds": torch.stack([item[1] for item in batch]),
+            "pooled_embeds": torch.stack([item[2] for item in batch]),
+            "time_ids": torch.stack([item[3] for item in batch]),
+        }
 
     dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn, drop_last=True)
 
@@ -285,6 +311,7 @@ def test_model_parameters_update_during_training(temp_workspace, temp_data_dir):
         dirs=dirs,
         writer=writer,
         device="cpu",
+        cached_data=True,
     )
 
     # Check that at least some parameters changed

@@ -32,7 +32,7 @@ dev = [
 optim = [
     "prodigyopt",
     "bitsandbytes",
-    "pynvml",
+    "nvidia-ml-py",
 ]
 
 [project.scripts]

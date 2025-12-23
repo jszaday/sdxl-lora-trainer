@@ -12,18 +12,26 @@ def parse_optimizer_spec(spec: str) -> tuple[str, dict]:
     if "(" not in spec:
         return spec.lower(), {}
 
-    name, rest = spec.split("(", 1)
-    name = name.strip().lower()
-    rest = rest.rsplit(")", 1)[0]
+    try:
+        expr = ast.parse(spec, mode="eval").body
+    except SyntaxError as exc:
+        raise ValueError(f"Invalid optimizer spec '{spec}'") from exc
 
+    if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Name):
+        raise ValueError(f"Invalid optimizer spec '{spec}'")
+
+    if expr.args:
+        raise ValueError(f"Positional arguments are not supported in optimizer spec '{spec}'")
+
+    name = expr.func.id.strip().lower()
     kwargs: dict = {}
-    for part in rest.split(","):
-        if not part.strip():
-            continue
-        if "=" not in part:
-            raise ValueError(f"Invalid optimizer argument '{part}' in spec '{spec}'")
-        key, val = part.split("=", 1)
-        kwargs[key.strip()] = ast.literal_eval(val.strip())
+    for kw in expr.keywords:
+        if kw.arg is None:
+            raise ValueError(f"Keyword expansion is not supported in optimizer spec '{spec}'")
+        try:
+            kwargs[kw.arg.strip()] = ast.literal_eval(kw.value)
+        except Exception as exc:
+            raise ValueError(f"Invalid optimizer value for '{kw.arg}' in spec '{spec}'") from exc
 
     return name, kwargs
 

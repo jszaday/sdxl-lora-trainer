@@ -18,7 +18,6 @@ def preprocess_dataset(
     cache_dir: Path,
     checkpoint: str,
     bucket_config: BucketConfig,
-    image_size: int = 1024,
     device: str = "cuda",
     dtype: torch.dtype = torch.float16,
     batch_size: int = 1,
@@ -29,7 +28,6 @@ def preprocess_dataset(
         train_data: Directory containing training images and captions
         cache_dir: Directory to save cached tensors
         checkpoint: Path to base SDXL checkpoint or HuggingFace model ID
-        image_size: Image size for preprocessing (unused, kept for compatibility)
         device: Device to use for encoding
         dtype: Data type for models
         batch_size: Batch size for preprocessing (higher = faster but more VRAM)
@@ -48,8 +46,6 @@ def preprocess_dataset(
     print(f"Loading dataset from {train_data}...")
     dataset = ImageFolderWithCaptions(
         data_dir=train_data,
-        image_size=image_size,
-        center_crop=True,
         bucket_config=bucket_config,
     )
     print(f"Found {len(dataset)} images")
@@ -162,7 +158,6 @@ def preprocess_dataset(
     metadata_path = cache_dir / "metadata.pt"
     metadata = {
         "num_samples": len(dataset),
-        "image_size": image_size,
         "vae_scaling_factor": vae.config.scaling_factor,
         "checkpoint": checkpoint,
         "num_buckets": bucket_config.num_buckets,

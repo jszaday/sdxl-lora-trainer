@@ -92,6 +92,7 @@ def train(
     te1_adapter=None,
     te2_adapter=None,
     base_model: str | None = None,
+    cached_data: bool = False,
 ) -> None:
     """Run the complete training loop.
 
@@ -108,14 +109,10 @@ def train(
         text_encoder_2: Second text encoder (optional for testing)
         tokenizer_1: First tokenizer (optional for testing)
         tokenizer_2: Second tokenizer (optional for testing)
+        cached_data: Whether the dataloader yields cached latents/embeds
     """
     model.train()
     model = model.to(device)
-    try:
-        model_dtype = next(model.parameters()).dtype
-    except StopIteration:
-        model_dtype = torch.float32
-
     # Set up noise scheduler for diffusion training
     noise_scheduler = DDPMScheduler(
         beta_start=0.00085,
@@ -125,8 +122,8 @@ def train(
         prediction_type="epsilon",  # Predict noise
     )
 
-    # Determine if we're using real diffusion or dummy mode
-    use_real_diffusion = vae is not None
+    # Determine if we're using real diffusion (on-the-fly encoding)
+    use_real_diffusion = vae is not None and not cached_data
 
     if use_real_diffusion:
         vae = vae.to(device)
@@ -237,9 +234,9 @@ def train(
             prefetched = _async_to_device(raw_next) if raw_next is not None else None
 
             # Detect if we're using cached data or raw images
-            use_cached_data = "latents" in batch
+            batch_is_cached = "latents" in batch
 
-            if use_cached_data:
+            if batch_is_cached:
                 # Using pre-cached latents and embeddings
                 latents = batch["latents"].to(device)
                 prompt_embeds = batch["prompt_embeds"].to(device)
@@ -287,7 +284,7 @@ def train(
                         added_cond_kwargs = None
 
             # Perform diffusion training step (common for both cached and non-cached)
-            if use_cached_data or use_real_diffusion:
+            if batch_is_cached or use_real_diffusion:
                 # Sample random timesteps
                 timesteps = torch.randint(
                     0,
@@ -315,18 +312,9 @@ def train(
                 loss = torch.nn.functional.mse_loss(noise_pred, noise)
 
             else:
-                # Dummy mode for testing without VAE
-                # Simple MSE loss on model output
-                pixel_values = batch["pixel_values"]
-                dummy_target = torch.zeros(
-                    config.batch_size, 4, config.image_size // 8, config.image_size // 8
-                ).to(device=device, dtype=model_dtype)
-                dummy_timesteps = torch.zeros(config.batch_size, device=device).long()
-                dummy_embeds = torch.zeros(
-                    config.batch_size, 77, 2048, device=device, dtype=model_dtype
+                raise RuntimeError(
+                    "Cannot run training without cached latents or a VAE/text encoder pipeline."
                 )
-                output = model(pixel_values, dummy_timesteps, dummy_embeds).sample
-                loss = torch.nn.functional.mse_loss(output, dummy_target)
 
             # Normalize loss by gradient accumulation steps
             loss = loss / config.grad_accum
@@ -354,9 +342,9 @@ def train(
 
                     # Log other metrics
                     effective_lr = optimizer.param_groups[0]["lr"]
-                    last_step = getattr(optimizer, "last_step_size", None)
-                    if last_step is not None:
-                        effective_lr = last_step
+                    tracked_lr = getattr(optimizer, "learning_rate", None)
+                    if tracked_lr is not None:
+                        effective_lr = tracked_lr
                     writer.add_scalar("train/lr", effective_lr, global_step)
                     writer.add_scalar("train/epoch", current_epoch, global_step)
 

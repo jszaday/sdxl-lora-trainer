@@ -72,26 +72,3 @@ def build_noise_scheduler(
 
     else:
         raise ValueError(f"Unknown scheduler '{name}'. " f"Valid options: simple, normal, karras")
-
-
-def build_sampler(name: str, scheduler) -> str:
-    """Validate sampler name and return it.
-
-    Args:
-        name: Sampler algorithm name
-        scheduler: The scheduler to use with this sampler
-
-    Returns:
-        The validated sampler name
-
-    Raises:
-        ValueError: If sampler name is not recognized
-    """
-    valid_samplers = {"euler", "euler_ancestral", "ddim", "heun"}
-
-    if name not in valid_samplers:
-        raise ValueError(
-            f"Unknown sampler '{name}'. " f"Valid options: {', '.join(sorted(valid_samplers))}"
-        )
-
-    return name

@@ -99,7 +99,7 @@ class ProdigyWithTracking(Optimizer):
         from prodigyopt import Prodigy
 
         # Track last effective lr
-        self.last_step_size: float | None = None
+        self.learning_rate: float | None = None
         self._state_moved = False
 
         # Instantiate inner optimizer
@@ -117,12 +117,11 @@ class ProdigyWithTracking(Optimizer):
 
     @torch.no_grad()
     def step(self, closure=None):
-        # Prodigy exposes step size via return value
-        step_size = self.inner.step(closure)
-        self.last_step_size = step_size
+        self.inner.step(closure)
+        self._record_learning_rate()
         if not self._state_moved:
             self._move_state_to_param_device()
-        return step_size
+        return self.learning_rate
 
     def zero_grad(self, set_to_none: bool = False):
         return self.inner.zero_grad(set_to_none=set_to_none)
@@ -138,6 +137,18 @@ class ProdigyWithTracking(Optimizer):
                     group[key] = group[key].to(device)
         self._state_moved = True
 
+    def _record_learning_rate(self):
+        """Capture an effective lr from Prodigy's param group state."""
+        for group in self.inner.param_groups:
+            if not group.get("params"):
+                continue
+            base_lr = group.get("lr")
+            d_scale = group.get("d")
+            if base_lr is None or d_scale is None:
+                continue
+            self.learning_rate = float(base_lr) * float(d_scale)
+            break
+
 
 class AdafactorWithTracking(Optimizer):
     """Adafactor wrapper that records the effective lr used per step."""
@@ -146,7 +157,7 @@ class AdafactorWithTracking(Optimizer):
         from transformers.optimization import Adafactor
 
         self.inner = Adafactor(params, *args, **kwargs)
-        self.last_step_size: float | None = None
+        self.learning_rate: float | None = None
 
     @property
     def param_groups(self):
@@ -180,5 +191,5 @@ class AdafactorWithTracking(Optimizer):
                 lr = self.inner._get_lr(group, state)
             except Exception:
                 continue
-            self.last_step_size = lr
+            self.learning_rate = lr
             break

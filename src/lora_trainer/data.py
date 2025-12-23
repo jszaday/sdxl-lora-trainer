@@ -41,20 +41,14 @@ class ImageFolderWithCaptions(Dataset):
         self,
         data_dir: Path,
         bucket_config: BucketConfig,
-        image_size: int = 1024,
-        center_crop: bool = True,
     ):
         """Initialize dataset.
 
         Args:
             data_dir: Directory containing image files
-            image_size: Target size for images (unused, kept for compatibility)
-            center_crop: Whether to center crop images to square (unused, kept for compatibility)
             bucket_config: Bucket configuration (bucketing always enabled)
         """
         self.data_dir = Path(data_dir)
-        self.image_size = image_size
-        self.center_crop = center_crop
         self.bucket_config = bucket_config
 
         # Collect all image files
@@ -465,20 +459,16 @@ def build_dataloader(
     data_dir: Path,
     batch_size: int,
     bucket_config: BucketConfig,
-    image_size: int = 1024,
     num_workers: int = 4,
     shuffle: bool = True,
-    center_crop: bool = True,
 ) -> DataLoader:
     """Build a DataLoader for training.
 
     Args:
         data_dir: Directory containing training images
         batch_size: Batch size
-        image_size: Target image size (unused, kept for compatibility)
         num_workers: Number of data loading workers
         shuffle: Whether to shuffle the dataset
-        center_crop: Whether to center crop images (unused, kept for compatibility)
         bucket_config: Bucket configuration (bucketing always enabled)
 
     Returns:
@@ -487,8 +477,6 @@ def build_dataloader(
     dataset = ImageFolderWithCaptions(
         data_dir=data_dir,
         bucket_config=bucket_config,
-        image_size=image_size,
-        center_crop=center_crop,
     )
 
     # Always use bucket-aware sampling

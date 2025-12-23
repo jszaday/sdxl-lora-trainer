@@ -397,10 +397,10 @@ def main() -> None:
                 cache_dir=cache_dir,
                 checkpoint=config.checkpoint,
                 bucket_config=bucket_config,
-                image_size=config.image_size,
                 device=device,
                 dtype=dtype,
-                batch_size=4,  # Use batch size 4 for preprocessing
+                # TODO: Consider a separate --preprocess-batch-size flag if decoupling is useful.
+                batch_size=config.batch_size,
             )
             print("\n✓ Preprocessing complete!\n")
 
@@ -418,7 +418,6 @@ def main() -> None:
             data_dir=config.train_data,
             batch_size=config.batch_size,
             bucket_config=bucket_config,
-            image_size=config.image_size,
             num_workers=config.num_workers,
         )
         print(f"Dataset size: {len(dataloader.dataset)} images")
@@ -591,6 +590,7 @@ def main() -> None:
         te1_adapter=te1_adapter,
         te2_adapter=te2_adapter,
         base_model=config.checkpoint,
+        cached_data=args.use_cached_data,
     )
 
     # Cleanup

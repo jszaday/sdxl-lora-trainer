@@ -248,13 +248,7 @@ def train(
                 # SDXL uses pooled embeddings as added_cond_kwargs
                 added_cond_kwargs = {"text_embeds": pooled_embeds}
                 # Add time_ids (original size, crops, target size)
-                if "time_ids" in batch:
-                    time_ids = batch["time_ids"].to(device)
-                else:
-                    # Fallback for backward compatibility with old caches
-                    time_ids = torch.tensor([[1024, 1024, 0, 0, 1024, 1024]], device=device).repeat(
-                        latents.shape[0], 1
-                    )
+                time_ids = batch["time_ids"].to(device)
                 added_cond_kwargs["time_ids"] = time_ids
 
             elif use_real_diffusion:
@@ -280,13 +274,7 @@ def train(
                         # SDXL uses pooled embeddings as added_cond_kwargs
                         added_cond_kwargs = {"text_embeds": pooled_embeds}
                         # Add time_ids (original size, crops, target size)
-                        if "time_ids" in batch:
-                            time_ids = batch["time_ids"].to(device)
-                        else:
-                            # Fallback for backward compatibility
-                            time_ids = torch.tensor(
-                                [[1024, 1024, 0, 0, 1024, 1024]], device=device
-                            ).repeat(latents.shape[0], 1)
+                        time_ids = batch["time_ids"].to(device)
                         added_cond_kwargs["time_ids"] = time_ids
                     else:
                         # Fallback: use unconditional embeddings
@@ -600,7 +588,7 @@ def save_checkpoint(
         # Convert LyCORIS checkpoint to safetensors using converter
         lycoris_path = checkpoint_dir / "final_lycoris.safetensors"
         try:
-            from ..lora_converter.converter import convert_lycoris_checkpoint
+            from lora_converter.converter import convert_lycoris_checkpoint
 
             # Convert the just-saved checkpoint
             convert_lycoris_checkpoint(

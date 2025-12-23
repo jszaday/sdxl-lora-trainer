@@ -115,16 +115,22 @@ def parse_args() -> argparse.Namespace:
         help="Number of data loading workers (default: 4)",
     )
     data_group.add_argument(
-        "--enable-buckets",
-        action="store_true",
-        default=True,
-        help="Enable aspect-ratio bucketing (default: True)",
+        "--num-buckets",
+        type=int,
+        default=0,
+        help="Number of aspect ratio buckets: 0=auto/all, 1=fixed size, N=top N (default: 0)",
     )
     data_group.add_argument(
-        "--no-buckets",
-        action="store_false",
-        dest="enable_buckets",
-        help="Disable aspect-ratio bucketing (use fixed image size)",
+        "--train-width",
+        type=int,
+        default=1024,
+        help="Training width when num-buckets=1 (fixed size mode) (default: 1024)",
+    )
+    data_group.add_argument(
+        "--train-height",
+        type=int,
+        default=1024,
+        help="Training height when num-buckets=1 (fixed size mode) (default: 1024)",
     )
     data_group.add_argument(
         "--bucket-min-dim",
@@ -300,9 +306,11 @@ def main() -> None:
             optimizer=args.optimizer,
             image_size=args.image_size,
             num_workers=args.num_workers,
-            enable_buckets=args.enable_buckets,
+            num_buckets=args.num_buckets,
             bucket_min_dim=args.bucket_min_dim,
             bucket_max_dim=args.bucket_max_dim,
+            train_width=args.train_width,
+            train_height=args.train_height,
             scheduler=args.scheduler,
             sampler=args.sampler,
             cfg=args.cfg,
@@ -330,15 +338,14 @@ def main() -> None:
     # Print configuration summary
     print(config.print_summary())
 
-    # Create bucket configuration
-    bucket_config = None
-    if config.enable_buckets:
-        bucket_config = BucketConfig(
-            enabled=True,
-            min_dimension=config.bucket_min_dim,
-            max_dimension=config.bucket_max_dim,
-            base_pixel_count=config.bucket_base_pixels,
-        )
+    # Create bucket configuration (always enabled)
+    bucket_config = BucketConfig(
+        min_dimension=config.bucket_min_dim,
+        max_dimension=config.bucket_max_dim,
+        num_buckets=config.num_buckets,
+        train_width=config.train_width,
+        train_height=config.train_height,
+    )
 
     # Set random seed
     set_seed(config.seed)
@@ -389,11 +396,11 @@ def main() -> None:
                 train_data=config.train_data,
                 cache_dir=cache_dir,
                 checkpoint=config.checkpoint,
+                bucket_config=bucket_config,
                 image_size=config.image_size,
                 device=device,
                 dtype=dtype,
                 batch_size=4,  # Use batch size 4 for preprocessing
-                bucket_config=bucket_config,
             )
             print("\n✓ Preprocessing complete!\n")
 
@@ -410,9 +417,9 @@ def main() -> None:
         dataloader = build_dataloader(
             data_dir=config.train_data,
             batch_size=config.batch_size,
+            bucket_config=bucket_config,
             image_size=config.image_size,
             num_workers=config.num_workers,
-            bucket_config=bucket_config,
         )
         print(f"Dataset size: {len(dataloader.dataset)} images")
         print(f"Batches per epoch: {len(dataloader)}")

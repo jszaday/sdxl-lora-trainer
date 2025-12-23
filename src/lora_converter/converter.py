@@ -137,10 +137,71 @@ LYCORIS_MARKERS = [
     "alpha",  # Alpha values for all types
 ]
 
+# Known LyCORIS/LoRA suffixes for ComfyUI-compatible keys.
+LYCORIS_SUFFIXES = [
+    ".lora_up.weight",
+    ".lora_down.weight",
+    ".lora_mid.weight",
+    ".lora_A.weight",
+    ".lora_B.weight",
+    ".lokr_w1_a",
+    ".lokr_w1_b",
+    ".lokr_w2_a",
+    ".lokr_w2_b",
+    ".lokr_w1",
+    ".lokr_w2",
+    ".lokr_t2",
+    ".hada_w1_a",
+    ".hada_w1_b",
+    ".hada_w2_a",
+    ".hada_w2_b",
+    ".hada_t1",
+    ".hada_t2",
+    ".oft_blocks",
+    ".rescale",
+    ".a1.weight",
+    ".a2.weight",
+    ".b1.weight",
+    ".b2.weight",
+    ".alpha",
+    ".dora_scale",
+    ".w_norm",
+    ".b_norm",
+    ".diff_b",
+    ".diff",
+    ".set_weight",
+]
+
 
 def _is_lycoris_key(key: str) -> bool:
     """Check if a state dict key belongs to a LyCORIS layer."""
     return any(marker in key for marker in LYCORIS_MARKERS)
+
+
+def _strip_adapter_prefix(key: str) -> str:
+    for prefix in ("unet.", "text_encoder_1.", "text_encoder_2."):
+        if key.startswith(prefix):
+            return key[len(prefix) :]
+    return key
+
+
+def _convert_lycoris_key(key: str, prefix: str) -> str:
+    """Convert a LyCORIS adapter key to ComfyUI key space."""
+    if key.startswith(("lora_unet_", "lora_te1_", "lora_te2_", "lycoris_")):
+        return key
+
+    key = _strip_adapter_prefix(key)
+    suffix = None
+    for candidate in LYCORIS_SUFFIXES:
+        if key.endswith(candidate):
+            suffix = candidate
+            break
+
+    if suffix is None:
+        raise ValueError(f"Key does not look like a LyCORIS tensor: {key}")
+
+    module_path = key[: -len(suffix)].replace(".", "_")
+    return f"{prefix}_{module_path}{suffix}"
 
 
 def convert_lycoris_checkpoint(
@@ -190,17 +251,20 @@ def convert_lycoris_checkpoint(
         # New format: adapter states saved separately
         unet_adapter = checkpoint["unet_adapter_state_dict"]
         for key, tensor in unet_adapter.items():
-            lycoris_state[f"unet.{key}"] = tensor.detach().cpu()
+            converted_key = _convert_lycoris_key(key, "lycoris")
+            lycoris_state[converted_key] = tensor.detach().cpu()
 
         if "te1_adapter_state_dict" in checkpoint:
             te1_adapter = checkpoint["te1_adapter_state_dict"]
             for key, tensor in te1_adapter.items():
-                lycoris_state[f"text_encoder_1.{key}"] = tensor.detach().cpu()
+                converted_key = _convert_lycoris_key(key, "lora_te1")
+                lycoris_state[converted_key] = tensor.detach().cpu()
 
         if "te2_adapter_state_dict" in checkpoint:
             te2_adapter = checkpoint["te2_adapter_state_dict"]
             for key, tensor in te2_adapter.items():
-                lycoris_state[f"text_encoder_2.{key}"] = tensor.detach().cpu()
+                converted_key = _convert_lycoris_key(key, "lora_te2")
+                lycoris_state[converted_key] = tensor.detach().cpu()
     else:
         # Old format: scan model_state_dict for embedded LyCORIS weights
         if isinstance(checkpoint, dict):
@@ -214,24 +278,26 @@ def convert_lycoris_checkpoint(
                 if "text_model" in key or "text_encoder" in key:
                     # Text encoder key - determine TE1 vs TE2
                     if "clip_g" in key or "text_encoder_2" in key:
-                        prefix = "text_encoder_2"
+                        prefix = "lora_te2"
                     else:
-                        prefix = "text_encoder_1"
+                        prefix = "lora_te1"
                 else:
                     # UNet key (no text_model/text_encoder in key)
-                    prefix = "unet"
+                    prefix = "lycoris"
 
-                # Add prefix and save (keep native LyCORIS format)
-                lycoris_state[f"{prefix}.{key}"] = tensor.detach().cpu()
+                converted_key = _convert_lycoris_key(key, prefix)
+                lycoris_state[converted_key] = tensor.detach().cpu()
 
         # Also check separate text encoder state dicts if present (old format)
         if isinstance(checkpoint, dict):
             for te_key in ["text_encoder_1_state_dict", "text_encoder_2_state_dict"]:
                 if te_key in checkpoint:
                     te_name = te_key.replace("_state_dict", "")
+                    prefix = "lora_te1" if te_name == "text_encoder_1" else "lora_te2"
                     for key, tensor in checkpoint[te_key].items():
                         if _is_lycoris_key(key):
-                            lycoris_state[f"{te_name}.{key}"] = tensor.detach().cpu()
+                            converted_key = _convert_lycoris_key(key, prefix)
+                            lycoris_state[converted_key] = tensor.detach().cpu()
 
     if not lycoris_state:
         raise ValueError(f"No LyCORIS tensors found in {input_path}")

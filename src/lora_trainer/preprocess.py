@@ -17,11 +17,11 @@ def preprocess_dataset(
     train_data: Path,
     cache_dir: Path,
     checkpoint: str,
+    bucket_config: BucketConfig,
     image_size: int = 1024,
     device: str = "cuda",
     dtype: torch.dtype = torch.float16,
     batch_size: int = 1,
-    bucket_config: BucketConfig | None = None,
 ) -> None:
     """Preprocess a dataset by caching latents and text embeddings.
 
@@ -29,11 +29,11 @@ def preprocess_dataset(
         train_data: Directory containing training images and captions
         cache_dir: Directory to save cached tensors
         checkpoint: Path to base SDXL checkpoint or HuggingFace model ID
-        image_size: Image size for preprocessing (used when bucketing is disabled)
+        image_size: Image size for preprocessing (unused, kept for compatibility)
         device: Device to use for encoding
         dtype: Data type for models
         batch_size: Batch size for preprocessing (higher = faster but more VRAM)
-        bucket_config: Optional bucket configuration for aspect-ratio bucketing
+        bucket_config: Bucket configuration (bucketing always enabled)
     """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -53,7 +53,12 @@ def preprocess_dataset(
         bucket_config=bucket_config,
     )
     print(f"Found {len(dataset)} images")
-    if bucket_config and bucket_config.enabled:
+    if bucket_config.num_buckets == 1:
+        print(
+            f"Using fixed size training: "
+            f"{bucket_config.train_width}x{bucket_config.train_height}"
+        )
+    else:
         print(f"Using aspect-ratio bucketing with {len(bucket_config.buckets)} buckets")
 
     # Load VAE
@@ -79,17 +84,20 @@ def preprocess_dataset(
     text_encoder_1.eval()
     text_encoder_2.eval()
 
-    # When bucketing is enabled, force batch_size=1 since images have different sizes
-    if bucket_config and bucket_config.enabled:
-        if batch_size > 1:
-            print(
-                f"\nNote: Bucketing is enabled, processing images one at a time "
-                f"(batch_size forced to 1 from {batch_size})"
-            )
-            batch_size = 1
+    # When multiple buckets are in play (auto/all or top N), images can differ in size.
+    # In that case we need batch_size=1 to avoid stacking mismatched tensors.
+    if bucket_config.num_buckets != 1 and batch_size > 1:
+        print(
+            f"\nNote: Using {len(bucket_config.buckets)} buckets, processing images one at a time "
+            f"(batch_size forced to 1 from {batch_size})"
+        )
+        batch_size = 1
 
     print(f"\nPreprocessing dataset (batch_size={batch_size})...")
     print(f"Cache directory: {cache_dir}")
+
+    # Track latent shapes for efficient batching later
+    latent_shapes = []
 
     # Process dataset
     with torch.no_grad():
@@ -128,20 +136,17 @@ def preprocess_dataset(
 
             # Save each item in the batch
             for i, batch_idx in enumerate(batch_indices):
-                # Save latent (with time_ids if bucketing is enabled)
+                # Save latent (always as dict with time_ids)
                 latent_path = latents_dir / f"{batch_idx:06d}.pt"
-                if batch_time_ids:
-                    # New format: save as dict with time_ids
-                    torch.save(
-                        {
-                            "latent": latents[i].cpu(),
-                            "time_ids": batch_time_ids[i],
-                        },
-                        latent_path,
-                    )
-                else:
-                    # Old format: save just the tensor (backward compatibility)
-                    torch.save(latents[i].cpu(), latent_path)
+                torch.save(
+                    {
+                        "latent": latents[i].cpu(),
+                        "time_ids": batch_time_ids[i],
+                    },
+                    latent_path,
+                )
+                # Track latent shape (H, W) for efficient batching
+                latent_shapes.append((latents[i].shape[1], latents[i].shape[2]))
 
                 # Save embeddings (both prompt and pooled)
                 embed_path = embeds_dir / f"{batch_idx:06d}.pt"
@@ -160,9 +165,8 @@ def preprocess_dataset(
         "image_size": image_size,
         "vae_scaling_factor": vae.config.scaling_factor,
         "checkpoint": checkpoint,
-        "bucketing_enabled": (
-            bucket_config is not None and bucket_config.enabled if bucket_config else False
-        ),
+        "num_buckets": bucket_config.num_buckets,
+        "latent_shapes": latent_shapes,
     }
     torch.save(metadata, metadata_path)
 

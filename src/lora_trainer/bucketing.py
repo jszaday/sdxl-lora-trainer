@@ -36,27 +36,39 @@ class AspectBucket:
 class BucketConfig:
     """Configuration for aspect ratio bucketing system.
 
+    Bucketing is always enabled. Use num_buckets to control the behavior:
+    - num_buckets=0: Auto mode, use all available buckets (default)
+    - num_buckets=1: Fixed size mode at train_width x train_height
+    - num_buckets=N: Use N evenly distributed buckets
+
     Attributes:
-        enabled: Whether bucketing is enabled
         buckets: List of available aspect ratio buckets
         min_dimension: Minimum dimension for any bucket (default: 512)
         max_dimension: Maximum dimension for any bucket (default: 2048)
-        base_pixel_count: Target pixel count per image (default: 1024 * 1024)
+        num_buckets: Number of buckets (0=auto/all, 1=fixed size, N=top N)
+        train_width: Training width when num_buckets=1 (default: 1024)
+        train_height: Training height when num_buckets=1 (default: 1024)
     """
 
-    enabled: bool = True
     buckets: list[AspectBucket] = field(default_factory=list)
     min_dimension: int = 512
     max_dimension: int = 2048
-    base_pixel_count: int = 1024 * 1024
+    num_buckets: int = 0
+    train_width: int = 1024
+    train_height: int = 1024
 
     def __post_init__(self):
         """Generate default buckets if not provided."""
         if not self.buckets:
+            # Calculate base pixel count from training dimensions
+            base_pixel_count = self.train_width * self.train_height
             self.buckets = generate_buckets(
-                base_pixels=self.base_pixel_count,
+                base_pixels=base_pixel_count,
                 min_dim=self.min_dimension,
                 max_dim=self.max_dimension,
+                num_buckets=self.num_buckets,
+                train_width=self.train_width,
+                train_height=self.train_height,
             )
 
 
@@ -64,6 +76,9 @@ def generate_buckets(
     base_pixels: int = 1024 * 1024,
     min_dim: int = 512,
     max_dim: int = 2048,
+    num_buckets: int = 0,
+    train_width: int = 1024,
+    train_height: int = 1024,
 ) -> list[AspectBucket]:
     """Generate a list of aspect ratio buckets with constant pixel area.
 
@@ -71,10 +86,25 @@ def generate_buckets(
         base_pixels: Target pixel count per bucket (default: 1024 * 1024)
         min_dim: Minimum dimension in pixels (default: 512)
         max_dim: Maximum dimension in pixels (default: 2048)
+        num_buckets: Number of buckets (0=auto/all, 1=fixed size, N=top N) (default: 0)
+        train_width: Training width when num_buckets=1 (default: 1024)
+        train_height: Training height when num_buckets=1 (default: 1024)
 
     Returns:
         List of AspectBucket objects covering common aspect ratios
     """
+    # Special case: single bucket mode (replaces old non-bucketing behavior)
+    if num_buckets == 1:
+        logger.info(f"Using fixed size training: {train_width}x{train_height}")
+        return [
+            AspectBucket(
+                width=train_width,
+                height=train_height,
+                aspect_ratio=train_width / train_height,
+                name=f"{train_width}x{train_height}",
+            )
+        ]
+
     buckets = []
 
     # Predefined bucket dimensions (all divisible by 8, ~1M pixels each)
@@ -133,7 +163,15 @@ def generate_buckets(
                 )
             )
 
-    logger.info(f"Generated {len(buckets)} aspect ratio buckets")
+    # Select N evenly distributed buckets if requested
+    if num_buckets > 1 and num_buckets < len(buckets):
+        step = len(buckets) / num_buckets
+        indices = [int(i * step) for i in range(num_buckets)]
+        buckets = [buckets[i] for i in indices]
+        logger.info(f"Selected {len(buckets)} evenly distributed buckets from available options")
+    else:
+        logger.info(f"Generated {len(buckets)} aspect ratio buckets")
+
     return buckets
 
 

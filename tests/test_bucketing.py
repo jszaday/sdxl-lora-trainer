@@ -43,11 +43,10 @@ class TestBucketConfig:
     def test_default_initialization(self):
         """Test default BucketConfig initialization."""
         config = BucketConfig()
-        assert config.enabled is True
         assert len(config.buckets) > 0  # Should auto-generate buckets
         assert config.min_dimension == 512
         assert config.max_dimension == 2048
-        assert config.base_pixel_count == 1024 * 1024
+        assert config.num_buckets == 0  # Auto mode
 
     def test_custom_bucket_range(self):
         """Test custom bucket range."""
@@ -58,10 +57,13 @@ class TestBucketConfig:
             assert 768 <= bucket.width <= 1536
             assert 768 <= bucket.height <= 1536
 
-    def test_disabled_bucketing(self):
-        """Test disabled bucketing."""
-        config = BucketConfig(enabled=False)
-        assert config.enabled is False
+    def test_single_bucket_mode(self):
+        """Test single bucket mode (replaces disabled bucketing)."""
+        config = BucketConfig(num_buckets=1, train_width=1024, train_height=1024)
+        assert config.num_buckets == 1
+        assert len(config.buckets) == 1
+        assert config.buckets[0].width == 1024
+        assert config.buckets[0].height == 1024
 
 
 class TestGenerateBuckets:
@@ -244,8 +246,8 @@ class TestCalculateTimeIds:
 class TestBucketBatchSampler:
     """Test BucketBatchSampler (integration with ImageFolderWithCaptions)."""
 
-    def test_sampler_requires_bucketing_enabled(self, tmp_path):
-        """Test that sampler requires bucketing to be enabled."""
+    def test_sampler_works_with_dataset(self, tmp_path):
+        """Test that sampler works with bucketed dataset."""
         from lora_trainer.data import ImageFolderWithCaptions
 
         # Create dummy images
@@ -253,11 +255,13 @@ class TestBucketBatchSampler:
             img = Image.new("RGB", (1024, 1024))
             img.save(tmp_path / f"img_{i}.png")
 
-        # Create dataset without bucketing
-        dataset = ImageFolderWithCaptions(tmp_path, bucket_config=None)
+        # Create dataset with bucketing (always enabled)
+        bucket_config = BucketConfig()
+        dataset = ImageFolderWithCaptions(tmp_path, bucket_config=bucket_config)
 
-        with pytest.raises(ValueError, match="BucketBatchSampler requires.*bucketing enabled"):
-            BucketBatchSampler(dataset, batch_size=2)
+        # Should work without error
+        sampler = BucketBatchSampler(dataset, batch_size=2)
+        assert len(list(sampler)) > 0
 
     def test_sampler_groups_by_bucket(self, tmp_path):
         """Test that sampler groups samples by bucket."""
@@ -275,7 +279,7 @@ class TestBucketBatchSampler:
             img.save(tmp_path / f"landscape_{i}.png")
 
         # Create dataset with bucketing
-        bucket_config = BucketConfig(enabled=True)
+        bucket_config = BucketConfig()
         dataset = ImageFolderWithCaptions(tmp_path, bucket_config=bucket_config)
 
         sampler = BucketBatchSampler(dataset, batch_size=2, shuffle=False)
@@ -302,7 +306,7 @@ class TestBucketBatchSampler:
             img = Image.new("RGB", (1024, 1024))
             img.save(tmp_path / f"img_{i}.png")
 
-        bucket_config = BucketConfig(enabled=True)
+        bucket_config = BucketConfig()
         dataset = ImageFolderWithCaptions(tmp_path, bucket_config=bucket_config)
 
         sampler = BucketBatchSampler(dataset, batch_size=3, drop_last=True)
@@ -320,7 +324,7 @@ class TestBucketBatchSampler:
             img = Image.new("RGB", (1024, 1024))
             img.save(tmp_path / f"img_{i}.png")
 
-        bucket_config = BucketConfig(enabled=True)
+        bucket_config = BucketConfig()
         dataset = ImageFolderWithCaptions(tmp_path, bucket_config=bucket_config)
 
         sampler_drop = BucketBatchSampler(dataset, batch_size=3, drop_last=True)
@@ -404,7 +408,7 @@ class TestEndToEndBucketing:
         img_portrait.save(tmp_path / "portrait.png")
 
         # Create dataset with bucketing
-        bucket_config = BucketConfig(enabled=True)
+        bucket_config = BucketConfig()
         dataset = ImageFolderWithCaptions(tmp_path, bucket_config=bucket_config)
 
         assert len(dataset) == 3
@@ -434,7 +438,7 @@ class TestEndToEndBucketing:
         img_wide = Image.new("RGB", (2000, 1000))
         img_wide.save(tmp_path / "3_wide.png")
 
-        bucket_config = BucketConfig(enabled=True)
+        bucket_config = BucketConfig()
         dataset = ImageFolderWithCaptions(tmp_path, bucket_config=bucket_config)
 
         # Check bucket assignments (sorted order: 1_square, 2_tall, 3_wide)

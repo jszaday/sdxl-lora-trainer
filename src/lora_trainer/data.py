@@ -40,17 +40,17 @@ class ImageFolderWithCaptions(Dataset):
     def __init__(
         self,
         data_dir: Path,
+        bucket_config: BucketConfig,
         image_size: int = 1024,
         center_crop: bool = True,
-        bucket_config: BucketConfig | None = None,
     ):
         """Initialize dataset.
 
         Args:
             data_dir: Directory containing image files
-            image_size: Target size for images (will be resized and/or cropped)
-            center_crop: Whether to center crop images to square
-            bucket_config: Optional bucket configuration for aspect-ratio bucketing
+            image_size: Target size for images (unused, kept for compatibility)
+            center_crop: Whether to center crop images to square (unused, kept for compatibility)
+            bucket_config: Bucket configuration (bucketing always enabled)
         """
         self.data_dir = Path(data_dir)
         self.image_size = image_size
@@ -67,25 +67,8 @@ class ImageFolderWithCaptions(Dataset):
         if len(self.image_paths) == 0:
             raise ValueError(f"No images found in {data_dir}")
 
-        # Initialize bucketing if enabled
-        self.use_bucketing = bucket_config is not None and bucket_config.enabled
-        if self.use_bucketing:
-            self._initialize_bucketing()
-        else:
-            # Build traditional transforms for fixed-size training
-            transform_list = []
-            if center_crop:
-                transform_list.append(transforms.CenterCrop(min(image_size, image_size)))
-            transform_list.extend(
-                [
-                    transforms.Resize(
-                        image_size, interpolation=transforms.InterpolationMode.BILINEAR
-                    ),
-                    transforms.ToTensor(),
-                    transforms.Normalize([0.5], [0.5]),  # Normalize to [-1, 1]
-                ]
-            )
-            self.transform = transforms.Compose(transform_list)
+        # Initialize bucketing (always enabled)
+        self._initialize_bucketing()
 
     def _initialize_bucketing(self) -> None:
         """Scan all images and assign to aspect ratio buckets.
@@ -128,61 +111,41 @@ class ImageFolderWithCaptions(Dataset):
             - 'time_ids': SDXL time_ids (if bucketing enabled)
             - 'bucket': Bucket info (if bucketing enabled)
         """
-        if self.use_bucketing:
-            # Bucketing path: use bucket-aware loading
-            metadata = self.image_metadata[idx]
-            image_path = metadata["path"]
+        # Always use bucketing path
+        metadata = self.image_metadata[idx]
+        image_path = metadata["path"]
 
-            # Load image
-            image = Image.open(image_path).convert("RGB")
+        # Load image
+        image = Image.open(image_path).convert("RGB")
 
-            # Resize and crop to bucket dimensions
-            bucket = metadata["bucket"]
-            image, crop_coords = resize_and_crop_to_bucket(image, bucket)
+        # Resize and crop to bucket dimensions
+        bucket = metadata["bucket"]
+        image, crop_coords = resize_and_crop_to_bucket(image, bucket)
 
-            # Apply minimal transforms (normalize only)
-            pixel_values = transforms.ToTensor()(image)
-            pixel_values = transforms.Normalize([0.5], [0.5])(pixel_values)
+        # Apply minimal transforms (normalize only)
+        pixel_values = transforms.ToTensor()(image)
+        pixel_values = transforms.Normalize([0.5], [0.5])(pixel_values)
 
-            # Calculate SDXL time_ids
-            time_ids = calculate_time_ids(
-                original_size=metadata["original_size"],
-                crop_coords=crop_coords,
-                target_size=(bucket.height, bucket.width),
-            )
+        # Calculate SDXL time_ids
+        time_ids = calculate_time_ids(
+            original_size=metadata["original_size"],
+            crop_coords=crop_coords,
+            target_size=(bucket.height, bucket.width),
+        )
 
-            # Load caption
-            caption_path = image_path.with_suffix(".txt")
-            if caption_path.exists():
-                caption = caption_path.read_text().strip()
-            else:
-                caption = ""
-
-            return {
-                "pixel_values": pixel_values,
-                "caption": caption,
-                "time_ids": time_ids,
-                "bucket": bucket,
-            }
+        # Load caption
+        caption_path = image_path.with_suffix(".txt")
+        if caption_path.exists():
+            caption = caption_path.read_text().strip()
         else:
-            # Traditional path: fixed-size loading
-            image_path = self.image_paths[idx]
+            caption = ""
 
-            # Load image
-            image = Image.open(image_path).convert("RGB")
-            pixel_values = self.transform(image)
-
-            # Load caption if exists
-            caption_path = image_path.with_suffix(".txt")
-            if caption_path.exists():
-                caption = caption_path.read_text().strip()
-            else:
-                caption = ""
-
-            return {
-                "pixel_values": pixel_values,
-                "caption": caption,
-            }
+        return {
+            "pixel_values": pixel_values,
+            "caption": caption,
+            "time_ids": time_ids,
+            "bucket": bucket,
+        }
 
 
 class BucketBatchSampler(Sampler):
@@ -211,9 +174,6 @@ class BucketBatchSampler(Sampler):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
-
-        if not dataset.use_bucketing:
-            raise ValueError("BucketBatchSampler requires a dataset with bucketing enabled")
 
         # Group indices by bucket
         self.bucket_indices = defaultdict(list)
@@ -259,6 +219,83 @@ class BucketBatchSampler(Sampler):
         return self.num_batches
 
 
+class CachedBucketBatchSampler(Sampler):
+    """Batch sampler that groups cached latents by their shape.
+
+    This sampler groups dataset indices by latent shape (H, W) and creates
+    batches of items with matching shapes. This allows efficient batching
+    of cached data with bucketing enabled.
+
+    Args:
+        dataset: CachedLatentsDataset instance
+        batch_size: Maximum batch size (treated as maximum, smaller batches used for
+            groups with fewer items)
+        shuffle: Whether to shuffle batches
+        drop_last: Whether to drop the last incomplete batch per shape group
+    """
+
+    def __init__(
+        self,
+        dataset,
+        batch_size: int,
+        shuffle: bool = True,
+        drop_last: bool = True,
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+
+        # Get latent shapes from dataset
+        latent_shapes = dataset.get_latent_shapes()
+
+        # Group indices by shape
+        self.shape_indices = defaultdict(list)
+        for idx, shape in enumerate(latent_shapes):
+            self.shape_indices[shape].append(idx)
+
+        # Calculate number of batches
+        self.num_batches = 0
+        for indices in self.shape_indices.values():
+            if self.drop_last:
+                self.num_batches += len(indices) // self.batch_size
+            else:
+                self.num_batches += (len(indices) + self.batch_size - 1) // self.batch_size
+
+        # Log statistics
+        num_shapes = len(self.shape_indices)
+        print(f"CachedBucketBatchSampler: {num_shapes} unique shapes, {self.num_batches} batches")
+
+    def __iter__(self):
+        """Generate batches of indices grouped by latent shape."""
+        all_batches = []
+
+        # Create batches for each shape
+        for _shape_key, indices in self.shape_indices.items():
+            # Shuffle indices within this shape group if requested
+            if self.shuffle:
+                indices = indices.copy()
+                random.shuffle(indices)
+
+            # Create batches (treating batch_size as maximum)
+            for i in range(0, len(indices), self.batch_size):
+                batch = indices[i : i + self.batch_size]
+                if len(batch) == self.batch_size or not self.drop_last:
+                    all_batches.append(batch)
+
+        # Shuffle batches across all shapes if requested
+        if self.shuffle:
+            random.shuffle(all_batches)
+
+        # Yield batches
+        for batch in all_batches:
+            yield batch
+
+    def __len__(self):
+        """Return the number of batches."""
+        return self.num_batches
+
+
 def bucket_aware_collate(batch: list[dict]) -> dict:
     """Custom collate function for bucketed batches.
 
@@ -291,6 +328,45 @@ def bucket_aware_collate(batch: list[dict]) -> dict:
     return {
         "pixel_values": pixel_values,
         "caption": captions,
+        "time_ids": time_ids,
+    }
+
+
+def cached_bucket_aware_collate(batch: list[dict]) -> dict:
+    """Custom collate function for cached latents with bucketing.
+
+    All items in the batch should have the same latent dimensions
+    (guaranteed by CachedBucketBatchSampler). This function stacks the
+    pre-computed latents and embeddings.
+
+    Args:
+        batch: List of cached dataset items (each a dict)
+
+    Returns:
+        Batch dictionary with stacked tensors
+    """
+    if not batch:
+        raise ValueError("Cannot collate empty batch")
+
+    # Verify all items in batch have same latent dimensions (defensive check)
+    first_shape = batch[0]["latents"].shape
+    for item in batch:
+        if item["latents"].shape != first_shape:
+            raise ValueError(
+                f"Mixed latent shapes in batch: {first_shape} vs {item['latents'].shape}. "
+                "This indicates a bug in the CachedBucketBatchSampler."
+            )
+
+    # Stack tensors
+    latents = torch.stack([item["latents"] for item in batch])
+    prompt_embeds = torch.stack([item["prompt_embeds"] for item in batch])
+    pooled_embeds = torch.stack([item["pooled_embeds"] for item in batch])
+    time_ids = torch.stack([item["time_ids"] for item in batch])
+
+    return {
+        "latents": latents,
+        "prompt_embeds": prompt_embeds,
+        "pooled_embeds": pooled_embeds,
         "time_ids": time_ids,
     }
 
@@ -348,18 +424,11 @@ class CachedLatentsDataset(Dataset):
             - 'pooled_embeds': Pooled text embeddings
             - 'time_ids': SDXL time_ids (if available, else default)
         """
-        # Load latent
+        # Load latent (always dict format with latent and time_ids)
         latent_path = self.latents_dir / f"{idx:06d}.pt"
         latent_data = torch.load(latent_path)
-
-        # Handle both old format (just tensor) and new format (dict with time_ids)
-        if isinstance(latent_data, dict):
-            latents = latent_data["latent"]
-            time_ids = latent_data.get("time_ids", [1024, 1024, 0, 0, 1024, 1024])
-        else:
-            # Backward compatibility: old caches only have tensor
-            latents = latent_data
-            time_ids = [1024, 1024, 0, 0, 1024, 1024]
+        latents = latent_data["latent"]
+        time_ids = latent_data["time_ids"]
 
         # Load embeddings
         embed_path = self.embeds_dir / f"{idx:06d}.pt"
@@ -372,65 +441,75 @@ class CachedLatentsDataset(Dataset):
             "time_ids": torch.tensor(time_ids),
         }
 
+    def get_latent_shapes(self) -> list[tuple[int, int]]:
+        """Get latent shapes for all samples from metadata.
+
+        Returns list of (H, W) tuples in latent space.
+
+        Returns:
+            List of (height, width) tuples for each sample's latent
+
+        Raises:
+            ValueError: If latent_shapes is missing from metadata
+        """
+        latent_shapes = self.metadata.get("latent_shapes")
+        if latent_shapes is None:
+            raise ValueError(
+                "Cache metadata missing 'latent_shapes'. "
+                "Please re-preprocess your dataset with the current version."
+            )
+        return latent_shapes
+
 
 def build_dataloader(
     data_dir: Path,
     batch_size: int,
+    bucket_config: BucketConfig,
     image_size: int = 1024,
     num_workers: int = 4,
     shuffle: bool = True,
     center_crop: bool = True,
-    bucket_config: BucketConfig | None = None,
 ) -> DataLoader:
     """Build a DataLoader for training.
 
     Args:
         data_dir: Directory containing training images
         batch_size: Batch size
-        image_size: Target image size (used when bucketing is disabled)
+        image_size: Target image size (unused, kept for compatibility)
         num_workers: Number of data loading workers
         shuffle: Whether to shuffle the dataset
-        center_crop: Whether to center crop images (used when bucketing is disabled)
-        bucket_config: Optional bucket configuration for aspect-ratio bucketing
+        center_crop: Whether to center crop images (unused, kept for compatibility)
+        bucket_config: Bucket configuration (bucketing always enabled)
 
     Returns:
         Configured DataLoader
     """
     dataset = ImageFolderWithCaptions(
         data_dir=data_dir,
+        bucket_config=bucket_config,
         image_size=image_size,
         center_crop=center_crop,
-        bucket_config=bucket_config,
+    )
+
+    # Always use bucket-aware sampling
+    sampler = BucketBatchSampler(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=True,
     )
 
     loader_kwargs: dict = {
+        "batch_sampler": sampler,
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
+        "collate_fn": bucket_aware_collate,
     }
     if torch.cuda.is_available() and num_workers > 0:
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = 2
 
-    # Use custom sampler and collate if bucketing enabled
-    if bucket_config and bucket_config.enabled:
-        sampler = BucketBatchSampler(
-            dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            drop_last=True,
-        )
-        loader_kwargs["batch_sampler"] = sampler
-        loader_kwargs["collate_fn"] = bucket_aware_collate
-    else:
-        # Traditional fixed-size batching
-        loader_kwargs["batch_size"] = batch_size
-        loader_kwargs["shuffle"] = shuffle
-        loader_kwargs["drop_last"] = True
-
-    dataloader = DataLoader(
-        dataset,
-        **loader_kwargs,
-    )
+    dataloader = DataLoader(dataset, **loader_kwargs)
 
     return dataloader
 
@@ -454,34 +533,24 @@ def build_cached_dataloader(
     """
     dataset = CachedLatentsDataset(cache_dir=cache_dir)
 
-    # Check if cache was created with bucketing enabled
-    bucketing_enabled = dataset.metadata.get("bucketing_enabled", False)
-    if bucketing_enabled and batch_size > 1:
-        logger.warning(
-            f"Cache was created with aspect-ratio bucketing enabled. "
-            f"Latents have different sizes and cannot be batched together. "
-            f"Forcing batch_size=1 (requested: {batch_size})."
-        )
-        logger.warning(
-            "To use larger batch sizes with bucketing, train without caching "
-            "(use --no-cached-data flag)."
-        )
-        batch_size = 1
+    # Always use bucket-aware sampling for cached data
+    sampler = CachedBucketBatchSampler(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        drop_last=True,
+    )
 
     loader_kwargs: dict = {
-        "batch_size": batch_size,
-        "shuffle": shuffle,
+        "batch_sampler": sampler,
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
-        "drop_last": True,  # Drop incomplete batches for consistent batch sizes
+        "collate_fn": cached_bucket_aware_collate,
     }
     if torch.cuda.is_available() and num_workers > 0:
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = 2
 
-    dataloader = DataLoader(
-        dataset,
-        **loader_kwargs,
-    )
+    dataloader = DataLoader(dataset, **loader_kwargs)
 
     return dataloader

@@ -1,38 +1,14 @@
 """Optimizer factory for spec parsing (adamw/8bit, lion/8bit, adafactor, prodigy)."""
 
-import ast
-
 import torch
 from torch.optim.lr_scheduler import LRScheduler
+
+from .utils import parse_spec
 
 
 def parse_optimizer_spec(spec: str) -> tuple[str, dict]:
     """Parse optimizer string like 'prodigy(lr=1e-4, weight_decay=0)'."""
-    spec = spec.strip()
-    if "(" not in spec:
-        return spec.lower(), {}
-
-    try:
-        expr = ast.parse(spec, mode="eval").body
-    except SyntaxError as exc:
-        raise ValueError(f"Invalid optimizer spec '{spec}'") from exc
-
-    if not isinstance(expr, ast.Call) or not isinstance(expr.func, ast.Name):
-        raise ValueError(f"Invalid optimizer spec '{spec}'")
-
-    if expr.args:
-        raise ValueError(f"Positional arguments are not supported in optimizer spec '{spec}'")
-
-    name = expr.func.id.strip().lower()
-    kwargs: dict = {}
-    for kw in expr.keywords:
-        if kw.arg is None:
-            raise ValueError(f"Keyword expansion is not supported in optimizer spec '{spec}'")
-        try:
-            kwargs[kw.arg.strip()] = ast.literal_eval(kw.value)
-        except Exception as exc:
-            raise ValueError(f"Invalid optimizer value for '{kw.arg}' in spec '{spec}'") from exc
-
+    name, kwargs = parse_spec(spec)
     return name, kwargs
 
 

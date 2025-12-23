@@ -12,7 +12,7 @@ from .data import build_cached_dataloader, build_dataloader
 from .logging import create_run_dirs, init_tensorboard, log_hparams, write_config_yaml
 from .preprocess import preprocess_dataset
 from .train_loop import load_checkpoint, train
-from .utils import set_seed
+from .utils import resolve_adapter_spec, resolve_lr_scheduler_spec, set_seed
 
 
 def _resolve_resume_path(path: Path) -> Path:
@@ -89,35 +89,11 @@ def parse_args() -> argparse.Namespace:
     )
     optim_group.add_argument(
         "--lr_scheduler",
+        "--lr_sched",
+        "--lr-sched",
         type=str,
         default="constant",
-        choices=[
-            "constant",
-            "constant_with_warmup",
-            "linear",
-            "cosine",
-            "cosine_with_restarts",
-            "polynomial",
-        ],
-        help="Learning rate scheduler for training (default: constant)",
-    )
-    optim_group.add_argument(
-        "--lr_warmup_steps",
-        type=int,
-        default=0,
-        help="Warmup steps for LR scheduler (default: 0)",
-    )
-    optim_group.add_argument(
-        "--lr_num_cycles",
-        type=int,
-        default=1,
-        help="Number of cycles for cosine_with_restarts (default: 1)",
-    )
-    optim_group.add_argument(
-        "--lr_power",
-        type=float,
-        default=1.0,
-        help="Power factor for polynomial scheduler (default: 1.0)",
+        help="Learning rate scheduler spec, e.g. constant_with_warmup(warmup_steps=100)",
     )
     optim_group.add_argument(
         "--min_snr_gamma",
@@ -242,52 +218,8 @@ def parse_args() -> argparse.Namespace:
         "--adapter",
         type=str,
         default="lora",
-        choices=["lora", "lycoris"],
-        help="Adapter backend to train (default: lora)",
+        help="Adapter spec, e.g. lora(rank=16,alpha=16) or locon(rank=16,alpha=16)",
     )
-    lora_group.add_argument(
-        "--lora_rank",
-        type=int,
-        default=16,
-        help="Rank of LoRA matrices (default: 16)",
-    )
-    lora_group.add_argument(
-        "--lora_alpha",
-        type=float,
-        default=16.0,
-        help="LoRA alpha scaling parameter (default: 16.0)",
-    )
-    lora_group.add_argument(
-        "--lycoris_algo",
-        type=str,
-        default="lokr",
-        help="LyCORIS algorithm to use when adapter=lycoris (default: lokr)",
-    )
-    lora_group.add_argument(
-        "--lycoris_dim",
-        type=int,
-        default=None,
-        help="LyCORIS linear_dim (defaults to lora_rank when omitted)",
-    )
-    lora_group.add_argument(
-        "--lycoris_alpha",
-        type=float,
-        default=None,
-        help="LyCORIS linear_alpha (defaults to lora_alpha when omitted)",
-    )
-    lora_group.add_argument(
-        "--lycoris_factor",
-        type=int,
-        default=-1,
-        help="LyCORIS factorization factor (default: -1 for auto)",
-    )
-    lora_group.add_argument(
-        "--lycoris_dropout",
-        type=float,
-        default=None,
-        help="LyCORIS dropout (0-1, optional)",
-    )
-
     # Misc arguments
     misc_group = parser.add_argument_group("misc arguments")
     misc_group.add_argument(
@@ -337,6 +269,37 @@ def main() -> None:
     """Main entry point for training."""
     args = parse_args()
 
+    # Resolve spec-style arguments
+    try:
+        lr_scheduler, lr_warmup_steps, lr_num_cycles, lr_power = resolve_lr_scheduler_spec(
+            args.lr_scheduler,
+            warmup_steps=TrainingConfig.lr_warmup_steps,
+            num_cycles=TrainingConfig.lr_num_cycles,
+            power=TrainingConfig.lr_power,
+        )
+        adapter_params = resolve_adapter_spec(
+            args.adapter,
+            lora_rank=TrainingConfig.lora_rank,
+            lora_alpha=TrainingConfig.lora_alpha,
+            lycoris_algo=TrainingConfig.lycoris_algo,
+            lycoris_dim=TrainingConfig.lycoris_dim,
+            lycoris_alpha=TrainingConfig.lycoris_alpha,
+            lycoris_factor=TrainingConfig.lycoris_factor,
+            lycoris_dropout=TrainingConfig.lycoris_dropout,
+        )
+    except ValueError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    adapter = adapter_params.get("adapter", args.adapter)
+    lora_rank = adapter_params.get("lora_rank", TrainingConfig.lora_rank)
+    lora_alpha = adapter_params.get("lora_alpha", TrainingConfig.lora_alpha)
+    lycoris_algo = adapter_params.get("lycoris_algo", TrainingConfig.lycoris_algo)
+    lycoris_dim = adapter_params.get("lycoris_dim", TrainingConfig.lycoris_dim)
+    lycoris_alpha = adapter_params.get("lycoris_alpha", TrainingConfig.lycoris_alpha)
+    lycoris_factor = adapter_params.get("lycoris_factor", TrainingConfig.lycoris_factor)
+    lycoris_dropout = adapter_params.get("lycoris_dropout", TrainingConfig.lycoris_dropout)
+
     # Build config from arguments
     try:
         config = TrainingConfig(
@@ -348,10 +311,10 @@ def main() -> None:
             learning_rate=args.learning_rate,
             grad_accum=args.grad_accum,
             optimizer=args.optimizer,
-            lr_scheduler=args.lr_scheduler,
-            lr_warmup_steps=args.lr_warmup_steps,
-            lr_num_cycles=args.lr_num_cycles,
-            lr_power=args.lr_power,
+            lr_scheduler=lr_scheduler,
+            lr_warmup_steps=lr_warmup_steps,
+            lr_num_cycles=lr_num_cycles,
+            lr_power=lr_power,
             image_size=args.image_size,
             num_workers=args.num_workers,
             num_buckets=args.num_buckets,
@@ -367,14 +330,14 @@ def main() -> None:
             sample_every=args.sample_every,
             samples_per_prompt=args.samples_per_prompt,
             sample_clip_skip=args.sample_clip_skip,
-            adapter=args.adapter,
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha,
-            lycoris_algo=args.lycoris_algo,
-            lycoris_dim=args.lycoris_dim,
-            lycoris_alpha=args.lycoris_alpha,
-            lycoris_factor=args.lycoris_factor,
-            lycoris_dropout=args.lycoris_dropout,
+            adapter=adapter,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            lycoris_algo=lycoris_algo,
+            lycoris_dim=lycoris_dim,
+            lycoris_alpha=lycoris_alpha,
+            lycoris_factor=lycoris_factor,
+            lycoris_dropout=lycoris_dropout,
             seed=args.seed,
             log_every=args.log_every,
             mixed_precision=args.mixed_precision,

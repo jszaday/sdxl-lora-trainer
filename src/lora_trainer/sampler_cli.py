@@ -11,7 +11,7 @@ from .config import TrainingConfig
 from .logging import create_run_dirs, init_tensorboard
 from .model import load_sdxl_unet, load_text_encoders, load_vae
 from .sampling import run_validation_samples
-from .utils import set_seed
+from .utils import parse_spec, resolve_adapter_spec, set_seed
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,50 +91,7 @@ def parse_args() -> argparse.Namespace:
         "--adapter",
         type=str,
         default="lora",
-        choices=["lora", "lycoris"],
-        help="Adapter backend to attach before sampling (default: lora)",
-    )
-    lora_group.add_argument(
-        "--lora_rank",
-        type=int,
-        default=None,
-        help="Rank of LoRA matrices (auto-detected from LoRA checkpoint if provided)",
-    )
-    lora_group.add_argument(
-        "--lora_alpha",
-        type=float,
-        default=None,
-        help=f"LoRA alpha scaling parameter (default: {TrainingConfig.lora_alpha} if not provided)",
-    )
-    lora_group.add_argument(
-        "--lycoris_algo",
-        type=str,
-        default="lokr",
-        help="LyCORIS algorithm when adapter=lycoris (default: lokr)",
-    )
-    lora_group.add_argument(
-        "--lycoris_dim",
-        type=int,
-        default=None,
-        help="LyCORIS linear_dim (defaults to lora_rank or TrainingConfig.lora_rank)",
-    )
-    lora_group.add_argument(
-        "--lycoris_alpha",
-        type=float,
-        default=None,
-        help="LyCORIS linear_alpha (defaults to lora_alpha or TrainingConfig.lora_alpha)",
-    )
-    lora_group.add_argument(
-        "--lycoris_factor",
-        type=int,
-        default=-1,
-        help="LyCORIS factorization factor (default: -1 for auto)",
-    )
-    lora_group.add_argument(
-        "--lycoris_dropout",
-        type=float,
-        default=None,
-        help="LyCORIS dropout (0-1, optional)",
+        help="Adapter spec, e.g. lora(rank=16,alpha=16) or locon(rank=16,alpha=16)",
     )
     lora_group.add_argument(
         "--lora_checkpoint",
@@ -170,6 +127,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    adapter_name, _ = parse_spec(args.adapter)
+
     # Set seed for reproducibility when prompts don't provide seeds
     set_seed(args.seed)
 
@@ -202,7 +161,7 @@ def main() -> None:
 
     # Optionally detect LoRA rank from checkpoint before loading UNet
     detected_rank: int | None = None
-    if args.adapter == "lora" and args.lora_checkpoint is not None:
+    if adapter_name == "lora" and args.lora_checkpoint is not None:
         try:
             state = torch.load(args.lora_checkpoint, map_location="cpu")
             if isinstance(state, dict) and "model_state_dict" in state:
@@ -242,10 +201,34 @@ def main() -> None:
         if detected_rank is not None:
             print(f"Detected LoRA rank {detected_rank} from checkpoint")
 
-    effective_rank = args.lora_rank or detected_rank or TrainingConfig.lora_rank
-    effective_alpha = args.lora_alpha if args.lora_alpha is not None else TrainingConfig.lora_alpha
-    if args.adapter == "lora":
-        if args.lora_alpha is None and detected_rank is not None and args.lora_rank is None:
+    try:
+        adapter_params = resolve_adapter_spec(
+            args.adapter,
+            lora_rank=detected_rank or TrainingConfig.lora_rank,
+            lora_alpha=TrainingConfig.lora_alpha,
+            lycoris_algo=TrainingConfig.lycoris_algo,
+            lycoris_dim=TrainingConfig.lycoris_dim,
+            lycoris_alpha=TrainingConfig.lycoris_alpha,
+            lycoris_factor=TrainingConfig.lycoris_factor,
+            lycoris_dropout=TrainingConfig.lycoris_dropout,
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    args.adapter = adapter_params.get("adapter", args.adapter)
+    args.lora_rank = adapter_params.get("lora_rank", TrainingConfig.lora_rank)
+    args.lora_alpha = adapter_params.get("lora_alpha", TrainingConfig.lora_alpha)
+    args.lycoris_algo = adapter_params.get("lycoris_algo", TrainingConfig.lycoris_algo)
+    args.lycoris_dim = adapter_params.get("lycoris_dim", TrainingConfig.lycoris_dim)
+    args.lycoris_alpha = adapter_params.get("lycoris_alpha", TrainingConfig.lycoris_alpha)
+    args.lycoris_factor = adapter_params.get("lycoris_factor", TrainingConfig.lycoris_factor)
+    args.lycoris_dropout = adapter_params.get("lycoris_dropout", TrainingConfig.lycoris_dropout)
+
+    effective_rank = args.lora_rank
+    effective_alpha = args.lora_alpha
+    if adapter_name == "lora":
+        if detected_rank is not None and args.lora_rank == detected_rank:
             print(
                 f"Using detected lora_rank={effective_rank}; "
                 f"lora_alpha defaulting to {effective_alpha}"

@@ -75,6 +75,8 @@ python -m lora_trainer.cli \
   --steps 5000 \
   --batch_size 4 \
   --workspace ./runs/experiment \
+  --optimizer "lion(lr=1e-4,betas=(0.9,0.99),weight_decay=0.01)" \
+  --lr_scheduler "constant_with_warmup(warmup_steps=100)" \
   --sample_prompts prompts.json \
   --sample_every 500 \
   --scheduler karras \
@@ -106,6 +108,7 @@ JSONL is also supported (one JSON object per line). Each entry may include:
 - `--grad_accum`: Gradient accumulation steps (default: 1)
 - `--optimizer`: Optimizer spec (default: `adamw`). Supports `adamw`, `lion`, `prodigy`. You can pass kwargs: e.g., `prodigy(lr=1e-4, weight_decay=0)`.
   - Install extras if needed: `prodigyopt` for `prodigy`, `torch_optimizer` for `lion`.
+- `--lr_scheduler`: LR scheduler spec, e.g. `constant_with_warmup(warmup_steps=100)`. Supported names: `constant`, `constant_with_warmup`, `linear`, `cosine`, `cosine_with_restarts`, `polynomial`.
 
 **Data:**
 - `--image_size`: Image size for training (default: 1024)
@@ -122,12 +125,7 @@ JSONL is also supported (one JSON object per line). Each entry may include:
 - `--sample_clip_skip`: Clip skip for text_encoder_1 hidden states (1 = penultimate; default: 1)
 
 **LoRA:**
-- `--adapter`: Choose adapter backend: `lora` or `lycoris` (default: `lora`)
-- `--lora_rank`: Rank of LoRA matrices (default: 16)
-- `--lora_alpha`: LoRA alpha scaling (default: 16.0)
-- `--lycoris_algo`: LyCORIS algorithm when `--adapter lycoris` (default: `lokr`)
-- `--lycoris_dim`: LyCORIS `linear_dim` (defaults to `--lora_rank`)
-- `--lycoris_alpha`: LyCORIS `linear_alpha` (defaults to `--lora_alpha`)
+- `--adapter`: Adapter spec. Examples: `lora(rank=16,alpha=16)` or `locon(rank=16,alpha=16,dropout=0.1)` (default: `lora`)
 
 **Misc:**
 - `--device`: Device to use for training - `cuda`, `cpu`, `mps`, etc. (auto-detected if not specified)
@@ -146,10 +144,19 @@ python -m lora_trainer.cli \
   --steps 5000 \
   --batch_size 4 \
   --workspace ./runs/my_lyco_experiment \
-  --adapter lycoris \
-  --lycoris_algo lokr \
-  --lycoris_dim 16 \
-  --lycoris_alpha 2.0
+  --adapter "lycoris(algo=lokr,dim=16,alpha=2.0)"
+```
+
+Or use a spec string (LoCon example):
+
+```bash
+python -m lora_trainer.cli \
+  --checkpoint stabilityai/stable-diffusion-xl-base-1.0 \
+  --train_data /path/to/training/images \
+  --steps 5000 \
+  --batch_size 4 \
+  --workspace ./runs/my_locon_experiment \
+  --adapter "locon(rank=16,alpha=2.0,dropout=0.1)"
 ```
 
 ### Standalone Sampler CLI
@@ -168,7 +175,7 @@ python -m lora_trainer.sampler_cli \
 
 - Supports the same prompt JSON/JSONL format as training.
 - Optional: `--lora_checkpoint` to load LoRA weights from a training checkpoint before sampling.
-- Pass `--adapter lycoris` (plus optional `--lycoris_*` flags) to sample with LyCORIS weights.
+- Pass `--adapter "lycoris(...)"` (or `locon(...)`) to sample with LyCORIS weights.
 - Outputs samples to `{workspace}/samples/` and logs images to `{workspace}/tb/`.
 
 ### Checkpoint Conversion

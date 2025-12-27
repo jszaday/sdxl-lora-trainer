@@ -202,7 +202,7 @@ def train(
 
     # Optional initial sampling before training starts
     if (
-        use_real_diffusion
+        vae is not None
         and config.sample_prompts is not None
         and global_step == 0
         and config.sample_every > 0
@@ -412,7 +412,7 @@ def train(
                     last_checkpoint_step = global_step
 
                     # Run validation sampling
-                    if config.sample_prompts is not None:
+                    if config.sample_prompts is not None and vae is not None:
                         run_validation_samples(
                             unet=model,
                             vae=vae,

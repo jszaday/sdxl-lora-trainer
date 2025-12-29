@@ -47,6 +47,7 @@ class TrainingConfig:
     sample_every: int = 500
     samples_per_prompt: int = 1
     sample_clip_skip: int = 1
+    enable_prompt_weighting: bool = True  # Enable A1111/ComfyUI-style prompt weighting
 
     # LoRA parameters
     adapter: str = "lora"  # "lora" or "lycoris"

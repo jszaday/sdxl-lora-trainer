@@ -77,6 +77,43 @@ def load_prompt_specs(path: Path, samples_per_prompt: int) -> list[PromptSpec]:
     return specs
 
 
+def _encode_single_encoder(
+    prompts: list[str],
+    text_encoder,
+    tokenizer,
+    device: str,
+    clip_skip: int = 1,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Encode prompts with a single text encoder.
+
+    Args:
+        prompts: List of text prompts
+        text_encoder: CLIP text encoder
+        tokenizer: Tokenizer for the encoder
+        device: Device for computation
+        clip_skip: Number of layers to skip (1 = penultimate)
+
+    Returns:
+        Tuple of (hidden_states, pooled_embeds)
+    """
+    tokens = tokenizer(
+        prompts,
+        padding="max_length",
+        max_length=tokenizer.model_max_length,
+        truncation=True,
+        return_tensors="pt",
+    ).input_ids.to(device)
+
+    with torch.no_grad():
+        encoder_output = text_encoder(tokens, output_hidden_states=True)
+
+    idx = -(clip_skip + 1)
+    hidden_states = encoder_output.hidden_states[idx]
+    pooled_embeds = encoder_output[0]
+
+    return hidden_states, pooled_embeds
+
+
 def encode_prompts_for_sampling(
     prompts: list[str],
     text_encoder_1,
@@ -85,8 +122,14 @@ def encode_prompts_for_sampling(
     tokenizer_2,
     device: str,
     clip_skip: int = 1,
+    enable_prompt_weighting: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Encode text prompts using SDXL's dual text encoders for sampling.
+
+    Supports A1111/ComfyUI-style prompt weighting:
+    - (text) -> weight *= 1.1
+    - ((text)) -> weight *= 1.21
+    - (text:1.5) -> weight = 1.5
 
     Args:
         prompts: List of text prompts
@@ -95,46 +138,94 @@ def encode_prompts_for_sampling(
         tokenizer_1: First tokenizer
         tokenizer_2: Second tokenizer
         device: Device for computation
+        clip_skip: Number of layers to skip (1 = penultimate)
+        enable_prompt_weighting: Whether to parse and apply prompt weights
 
     Returns:
         Tuple of (prompt_embeds, pooled_prompt_embeds)
     """
-    # Tokenize with both tokenizers
-    tokens_1 = tokenizer_1(
-        prompts,
-        padding="max_length",
-        max_length=tokenizer_1.model_max_length,
-        truncation=True,
-        return_tensors="pt",
-    ).input_ids.to(device)
+    # Check if any prompts have weighting syntax
+    has_weights = enable_prompt_weighting and any("(" in p or ":" in p for p in prompts)
 
-    tokens_2 = tokenizer_2(
-        prompts,
-        padding="max_length",
-        max_length=tokenizer_2.model_max_length,
-        truncation=True,
-        return_tensors="pt",
-    ).input_ids.to(device)
+    if not has_weights:
+        # Fast path: no weighting needed, use original implementation
+        hidden_1, pooled_1 = _encode_single_encoder(
+            prompts, text_encoder_1, tokenizer_1, device, clip_skip
+        )
+        hidden_2, pooled_2 = _encode_single_encoder(
+            prompts, text_encoder_2, tokenizer_2, device, clip_skip
+        )
 
-    # Encode with both encoders
-    with torch.no_grad():
-        encoder_output_1 = text_encoder_1(tokens_1, output_hidden_states=True)
-        encoder_output_2 = text_encoder_2(tokens_2, output_hidden_states=True)
+        prompt_embeds = torch.cat([hidden_1, hidden_2], dim=-1)
+        return prompt_embeds, pooled_2
 
-    # SDXL uses penultimate hidden states by default; clip_skip lets us step back further.
-    idx = -(clip_skip + 1)
+    # Weighted path: parse and apply weights
+    from .prompt_weighting import (
+        apply_prompt_weights,
+        get_token_positions,
+        parse_weighted_prompt,
+    )
 
-    # SDXL uses penultimate hidden states from encoder 1 and encoder 2
+    # Encode empty prompts as reference baseline
+    empty_hidden_1, _ = _encode_single_encoder(
+        [""] * len(prompts), text_encoder_1, tokenizer_1, device, clip_skip
+    )
+    empty_hidden_2, _ = _encode_single_encoder(
+        [""] * len(prompts), text_encoder_2, tokenizer_2, device, clip_skip
+    )
+
+    weighted_hidden_1 = []
+    weighted_hidden_2 = []
+    pooled_embeds_list = []
+
+    for i, prompt in enumerate(prompts):
+        # Parse weighted segments
+        segments = parse_weighted_prompt(prompt)
+
+        # Check if this prompt actually has weights
+        if not segments or all(s.weight == 1.0 for s in segments):
+            # No weights, encode normally
+            hidden_1, _ = _encode_single_encoder(
+                [prompt], text_encoder_1, tokenizer_1, device, clip_skip
+            )
+            hidden_2, pooled = _encode_single_encoder(
+                [prompt], text_encoder_2, tokenizer_2, device, clip_skip
+            )
+            weighted_hidden_1.append(hidden_1[0])
+            weighted_hidden_2.append(hidden_2[0])
+            pooled_embeds_list.append(pooled[0])
+            continue
+
+        # Get token positions for each segment
+        segment_texts = [s.text for s in segments]
+        positions_1 = get_token_positions(segment_texts, tokenizer_1, tokenizer_1.model_max_length)
+        positions_2 = get_token_positions(segment_texts, tokenizer_2, tokenizer_2.model_max_length)
+
+        # Encode full prompt
+        hidden_1, _ = _encode_single_encoder(
+            [prompt], text_encoder_1, tokenizer_1, device, clip_skip
+        )
+        hidden_2, pooled = _encode_single_encoder(
+            [prompt], text_encoder_2, tokenizer_2, device, clip_skip
+        )
+
+        # Apply weights to each encoder's embeddings
+        weighted_1 = apply_prompt_weights(hidden_1[0], segments, empty_hidden_1[i], positions_1)
+        weighted_2 = apply_prompt_weights(hidden_2[0], segments, empty_hidden_2[i], positions_2)
+
+        weighted_hidden_1.append(weighted_1)
+        weighted_hidden_2.append(weighted_2)
+        pooled_embeds_list.append(pooled[0])  # Pooled embeddings remain unweighted
+
+    # Stack and concatenate
     prompt_embeds = torch.cat(
         [
-            encoder_output_1.hidden_states[idx],
-            encoder_output_2.hidden_states[idx],
+            torch.stack(weighted_hidden_1, dim=0),
+            torch.stack(weighted_hidden_2, dim=0),
         ],
         dim=-1,
     )
-
-    # Get pooled embeddings from encoder 2
-    pooled_prompt_embeds = encoder_output_2[0]
+    pooled_prompt_embeds = torch.stack(pooled_embeds_list, dim=0)
 
     return prompt_embeds, pooled_prompt_embeds
 
@@ -349,6 +440,7 @@ def run_validation_samples(
             tokenizer_2,
             device,
             clip_skip=config.sample_clip_skip,
+            enable_prompt_weighting=getattr(config, "enable_prompt_weighting", True),
         )
 
         # Encode negative prompts (empty string)
@@ -360,6 +452,7 @@ def run_validation_samples(
             tokenizer_2,
             device,
             clip_skip=config.sample_clip_skip,
+            enable_prompt_weighting=getattr(config, "enable_prompt_weighting", True),
         )
 
         # Set model to eval mode

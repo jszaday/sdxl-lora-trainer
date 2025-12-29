@@ -208,3 +208,120 @@ def test_sample_prompts_file_creation(temp_workspace):
     assert specs[2].prompt == "a dog"
     assert specs[2].negative == ""
     assert specs[2].seed is None
+
+
+def test_encode_prompts_with_weighting():
+    """Test that weighted prompts encode correctly."""
+    prompts = ["a (cat:1.5)", "a ((very)) cute dog"]
+    text_encoder_1 = DummyTextEncoder(768)
+    text_encoder_2 = DummyTextEncoder(1280)
+    tokenizer_1 = DummyTokenizer()
+    tokenizer_2 = DummyTokenizer()
+
+    # Test with weighting enabled
+    prompt_embeds_weighted, pooled_embeds_weighted = encode_prompts_for_sampling(
+        prompts,
+        text_encoder_1,
+        text_encoder_2,
+        tokenizer_1,
+        tokenizer_2,
+        "cpu",
+        enable_prompt_weighting=True,
+    )
+
+    # Should produce correct shapes
+    assert prompt_embeds_weighted.shape == (2, 77, 768 + 1280)
+    assert pooled_embeds_weighted.shape == (2, 1280)
+
+    # Test with weighting disabled
+    prompt_embeds_plain, pooled_embeds_plain = encode_prompts_for_sampling(
+        prompts,
+        text_encoder_1,
+        text_encoder_2,
+        tokenizer_1,
+        tokenizer_2,
+        "cpu",
+        enable_prompt_weighting=False,
+    )
+
+    # Should produce correct shapes
+    assert prompt_embeds_plain.shape == (2, 77, 768 + 1280)
+    assert pooled_embeds_plain.shape == (2, 1280)
+
+    # Weighted and non-weighted should produce different results (due to random dummy encoder)
+    # We can't assert they're different because the dummy encoder returns random values
+    # But we can assert the function completes successfully
+
+
+def test_backward_compatibility():
+    """Test that plain prompts work unchanged with weighting enabled."""
+    prompts = ["a simple cat", "a simple dog"]
+    text_encoder_1 = DummyTextEncoder(768)
+    text_encoder_2 = DummyTextEncoder(1280)
+    tokenizer_1 = DummyTokenizer()
+    tokenizer_2 = DummyTokenizer()
+
+    # Encode with weighting enabled (should take fast path)
+    prompt_embeds, pooled_embeds = encode_prompts_for_sampling(
+        prompts,
+        text_encoder_1,
+        text_encoder_2,
+        tokenizer_1,
+        tokenizer_2,
+        "cpu",
+        enable_prompt_weighting=True,
+    )
+
+    # Should produce correct shapes
+    assert prompt_embeds.shape == (2, 77, 768 + 1280)
+    assert pooled_embeds.shape == (2, 1280)
+
+
+def test_mixed_batch():
+    """Test batch with some weighted and some non-weighted prompts."""
+    prompts = [
+        "a simple cat",  # No weights
+        "a (big:1.3) dog",  # Weighted
+        "another plain prompt",  # No weights
+    ]
+    text_encoder_1 = DummyTextEncoder(768)
+    text_encoder_2 = DummyTextEncoder(1280)
+    tokenizer_1 = DummyTokenizer()
+    tokenizer_2 = DummyTokenizer()
+
+    prompt_embeds, pooled_embeds = encode_prompts_for_sampling(
+        prompts,
+        text_encoder_1,
+        text_encoder_2,
+        tokenizer_1,
+        tokenizer_2,
+        "cpu",
+        enable_prompt_weighting=True,
+    )
+
+    # Should produce correct shapes for all prompts
+    assert prompt_embeds.shape == (3, 77, 768 + 1280)
+    assert pooled_embeds.shape == (3, 1280)
+
+
+def test_empty_prompt_with_weighting():
+    """Test that empty prompts work with weighting enabled."""
+    prompts = [""]
+    text_encoder_1 = DummyTextEncoder(768)
+    text_encoder_2 = DummyTextEncoder(1280)
+    tokenizer_1 = DummyTokenizer()
+    tokenizer_2 = DummyTokenizer()
+
+    prompt_embeds, pooled_embeds = encode_prompts_for_sampling(
+        prompts,
+        text_encoder_1,
+        text_encoder_2,
+        tokenizer_1,
+        tokenizer_2,
+        "cpu",
+        enable_prompt_weighting=True,
+    )
+
+    # Should produce correct shapes
+    assert prompt_embeds.shape == (1, 77, 768 + 1280)
+    assert pooled_embeds.shape == (1, 1280)

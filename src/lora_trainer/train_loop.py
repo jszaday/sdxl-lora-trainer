@@ -21,6 +21,20 @@ if TYPE_CHECKING:
     from .config import TrainingConfig
 
 
+# TODO: Prompt weighting for training
+# To add training-time prompt weighting:
+# 1. Import from prompt_weighting module (parse_weighted_prompt,
+#    apply_prompt_weights, get_token_positions)
+# 2. Add enable_training_prompt_weighting config flag (default False for safety)
+# 3. Apply same logic as encode_prompts_for_sampling() in sampling.py:
+#    - Detect if any captions have weighting syntax: "(" or ":" in caption
+#    - Encode empty reference prompts for baseline
+#    - For each caption, parse weighted segments
+#    - Get token positions for each segment (separate for each encoder)
+#    - Apply weights to hidden states before concatenation
+# 4. Test impact on training convergence and loss computation
+# Note: This affects loss computation and may change training dynamics.
+# Consider starting with a small learning rate and monitoring loss curves carefully.
 def encode_prompts(
     captions: list[str],
     text_encoder_1,

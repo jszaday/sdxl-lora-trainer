@@ -211,6 +211,19 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Clip skip for text_encoder_1 hidden states (1 = penultimate, like current)",
     )
+    sampling_group.add_argument(
+        "--enable_prompt_weighting",
+        dest="enable_prompt_weighting",
+        action="store_true",
+        default=True,
+        help="Enable A1111/ComfyUI-style prompt weighting: (text), ((text)), (text:1.5)",
+    )
+    sampling_group.add_argument(
+        "--disable_prompt_weighting",
+        dest="enable_prompt_weighting",
+        action="store_false",
+        help="Disable prompt weighting (treat parentheses as literal text)",
+    )
 
     # LoRA arguments
     lora_group = parser.add_argument_group("LoRA arguments")

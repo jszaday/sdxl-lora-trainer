@@ -218,12 +218,12 @@ def main() -> None:
         adapter_params = resolve_adapter_spec(
             args.adapter,
             lora_rank=detected_rank or TrainingConfig.lora_rank,
-            lora_alpha=TrainingConfig.lora_alpha,
-            lycoris_algo=TrainingConfig.lycoris_algo,
-            lycoris_dim=TrainingConfig.lycoris_dim,
-            lycoris_alpha=TrainingConfig.lycoris_alpha,
+            lora_alpha=None,
+            lycoris_algo=None,
+            lycoris_dim=None,
+            lycoris_alpha=None,
             lycoris_factor=TrainingConfig.lycoris_factor,
-            lycoris_dropout=TrainingConfig.lycoris_dropout,
+            lycoris_dropout=None,
         )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -231,23 +231,6 @@ def main() -> None:
 
     args.adapter = adapter_params.get("adapter", args.adapter)
     args.lora_rank = adapter_params.get("lora_rank", TrainingConfig.lora_rank)
-    args.lora_alpha = adapter_params.get("lora_alpha", TrainingConfig.lora_alpha)
-    args.lycoris_algo = adapter_params.get("lycoris_algo", TrainingConfig.lycoris_algo)
-    args.lycoris_dim = adapter_params.get("lycoris_dim", TrainingConfig.lycoris_dim)
-    args.lycoris_alpha = adapter_params.get("lycoris_alpha", TrainingConfig.lycoris_alpha)
-    args.lycoris_factor = adapter_params.get("lycoris_factor", TrainingConfig.lycoris_factor)
-    args.lycoris_dropout = adapter_params.get("lycoris_dropout", TrainingConfig.lycoris_dropout)
-
-    effective_rank = args.lora_rank
-    effective_alpha = args.lora_alpha
-    if adapter_name == "lora":
-        if detected_rank is not None and args.lora_rank == detected_rank:
-            print(
-                f"Using detected lora_rank={effective_rank}; "
-                f"lora_alpha defaulting to {effective_alpha}"
-            )
-    effective_lyco_dim = args.lycoris_dim or effective_rank
-    effective_lyco_alpha = args.lycoris_alpha if args.lycoris_alpha is not None else effective_alpha
 
     # Load models
     print(f"\nLoading UNet from: {args.checkpoint}")
@@ -255,14 +238,8 @@ def main() -> None:
         checkpoint_or_model_id=args.checkpoint,
         device=device,
         dtype=dtype,
-        lora_rank=effective_rank,
-        lora_alpha=effective_alpha,
+        lora_rank=args.lora_rank,
         adapter=args.adapter,
-        lycoris_dim=effective_lyco_dim,
-        lycoris_alpha=effective_lyco_alpha,
-        lycoris_algo=args.lycoris_algo,
-        lycoris_factor=args.lycoris_factor,
-        lycoris_dropout=args.lycoris_dropout,
     )
 
     print("Loading VAE...")
@@ -279,14 +256,8 @@ def main() -> None:
         args.checkpoint,
         device=device,
         dtype=dtype,
-        lora_rank=effective_rank,
-        lora_alpha=effective_alpha,
+        lora_rank=args.lora_rank,
         adapter=args.adapter,
-        lycoris_dim=effective_lyco_dim,
-        lycoris_alpha=effective_lyco_alpha,
-        lycoris_algo=args.lycoris_algo,
-        lycoris_factor=args.lycoris_factor,
-        lycoris_dropout=args.lycoris_dropout,
     )
 
     if args.lora_checkpoint is not None:

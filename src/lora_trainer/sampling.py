@@ -12,7 +12,6 @@ import torch.nn as nn
 from diffusers import AutoencoderKL
 from PIL import Image
 from torch.utils.tensorboard import SummaryWriter
-from torchvision.utils import make_grid
 from tqdm import tqdm
 
 from .schedulers import build_noise_scheduler
@@ -23,6 +22,7 @@ class PromptSpec:
     prompt: str
     negative: str = ""
     seed: int | None = None
+    name: str | None = None
 
 
 def _normalize_prompt_entry(entry: object) -> PromptSpec:
@@ -43,7 +43,11 @@ def _normalize_prompt_entry(entry: object) -> PromptSpec:
         if seed is not None and not isinstance(seed, int):
             raise ValueError("Prompt entry 'seed' must be an integer if provided")
 
-        return PromptSpec(prompt=prompt, negative=negative, seed=seed)
+        name = entry.get("name")
+        if name is not None and not isinstance(name, str):
+            raise ValueError("Prompt entry 'name' must be a string if provided")
+
+        return PromptSpec(prompt=prompt, negative=negative, seed=seed, name=name)
 
     raise ValueError("Prompt entry must be a string or object with prompt/negative/seed")
 
@@ -483,22 +487,32 @@ def run_validation_samples(
         # Decode to images
         images = decode_latents(vae, latents)
 
-        # Create grid
-        grid = make_grid(images, nrow=config.samples_per_prompt, padding=2, normalize=False)
-
-        # Save to file
+        # Save individual images
         samples_dir.mkdir(parents=True, exist_ok=True)
-        save_path = samples_dir / f"step_{global_step:06d}.png"
+        saved_paths = []
 
-        # Convert to PIL and save
-        grid_np = grid.to(torch.float32).cpu().permute(1, 2, 0).numpy()
-        grid_np = (grid_np * 255).astype("uint8")
-        Image.fromarray(grid_np).save(save_path)
+        for idx, (image, spec) in enumerate(zip(images, prompt_specs, strict=True)):
+            # Determine filename
+            if spec.name:
+                # Use custom name if provided
+                filename = f"step_{global_step:06d}_{spec.name}.png"
+            else:
+                # Fall back to index-based naming
+                filename = f"step_{global_step:06d}_{idx}.png"
 
-        # Log to TensorBoard
-        writer.add_image("samples", grid, global_step)
+            save_path = samples_dir / filename
 
-        print(f"Saved validation samples to {save_path}")
+            # Convert to PIL and save
+            image_np = image.to(torch.float32).cpu().permute(1, 2, 0).numpy()
+            image_np = (image_np * 255).astype("uint8")
+            Image.fromarray(image_np).save(save_path)
+            saved_paths.append(save_path)
+
+            # Log to TensorBoard with unique tag
+            tag = f"samples/{spec.name}" if spec.name else f"samples/{idx}"
+            writer.add_image(tag, image, global_step)
+
+        print(f"Saved {len(saved_paths)} validation samples to {samples_dir}")
 
         # Return to train mode
         unet.train()

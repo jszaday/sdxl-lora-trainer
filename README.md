@@ -90,9 +90,9 @@ Structured prompts are provided as JSON/JSONL with per-sample fields:
 
 ```json
 [
-  { "prompt": "a photo of a mountain landscape", "negative": "low-res", "seed": 1234 },
+  { "prompt": "a photo of a mountain landscape", "negative": "low-res", "seed": 1234, "name": "mountain" },
   { "prompt": "a portrait of a person", "negative": "blurry" },
-  { "prompt": "a cute cat", "seed": 42 }
+  { "prompt": "a cute cat", "seed": 42, "name": "cat_portrait" }
 ]
 ```
 
@@ -100,6 +100,11 @@ JSONL is also supported (one JSON object per line). Each entry may include:
 - `prompt`/`positive`: required positive text
 - `negative`: optional negative prompt (defaults to empty)
 - `seed`: optional integer seed
+- `name`: optional name for the output file (defaults to index-based naming)
+
+Each sample is saved as an individual image file:
+- With name: `step_000500_mountain.png`
+- Without name: `step_000500_0.png`, `step_000500_1.png`, etc.
 
 ### All CLI Options
 
@@ -173,10 +178,13 @@ python -m lora_trainer.sampler_cli \
   --sampler_steps 30
 ```
 
-- Supports the same prompt JSON/JSONL format as training.
+- Supports the same prompt JSON/JSONL format as training (including optional `name` field).
 - Optional: `--lora_checkpoint` to load LoRA weights from a training checkpoint before sampling.
-- Pass `--adapter "lycoris(...)"` (or `locon(...)`) to sample with LyCORIS weights.
-- Outputs samples to `{workspace}/samples/` and logs images to `{workspace}/tb/`.
+- Pass `--adapter "lora"` or `--adapter "lycoris"` to specify adapter type.
+- Outputs individual sample images to `{workspace}/samples/` (e.g., `step_000000_0.png` or `step_000000_mountain.png`).
+- Each sample is logged separately to TensorBoard at `{workspace}/tb/` with unique tags (`samples/0`, `samples/mountain`, etc.).
+
+**Note:** When loading a checkpoint, adapter parameters (rank, alpha, etc.) are automatically detected and loaded from the checkpoint. You typically only need to specify `--adapter` type and optionally `--lora_checkpoint` path.
 
 ### Checkpoint Conversion
 
@@ -244,9 +252,12 @@ Your workspace will contain:
     final_lora.safetensors      # (if adapter=lora)
     final_lycoris.safetensors   # (if adapter=lycoris)
   tb/                 # TensorBoard logs
-  samples/            # Validation images
-    step_000500.png
-    step_001000.png
+  samples/            # Individual validation images
+    step_000500_0.png
+    step_000500_1.png
+    step_000500_mountain.png    # (if name specified in prompt)
+    step_001000_0.png
+    step_001000_1.png
 
 ## Resuming Training
 
@@ -322,7 +333,7 @@ ruff check src/ tests/
 - Enhanced logging and progress tracking
 - Additional UX improvements
 
-**Test Status**: 94 tests passing, 2 skipped
+**Test Status**: 129 tests passing, 2 skipped
 
 ## Contributing
 

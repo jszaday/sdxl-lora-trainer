@@ -159,6 +159,9 @@ def train(
     use_cuda_device = device.startswith("cuda") and torch.cuda.is_available()
     copy_stream = torch.cuda.Stream(device=device) if use_cuda_device else None
     target_device = torch.device(device)
+    use_amp = use_cuda_device and config.mixed_precision in {"fp16", "bf16"}
+    amp_dtype = torch.float16 if config.mixed_precision == "fp16" else torch.bfloat16
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp and config.mixed_precision == "fp16")
 
     def _async_to_device(batch):
         # Detect batch type: cached (has latents) or raw (has pixel_values)
@@ -331,30 +334,33 @@ def train(
                 noise = torch.randn_like(latents)
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-                # Predict noise
-                if added_cond_kwargs is not None:
-                    noise_pred = model(
-                        noisy_latents,
-                        timesteps,
-                        prompt_embeds,
-                        added_cond_kwargs=added_cond_kwargs,
-                    ).sample
-                else:
-                    noise_pred = model(noisy_latents, timesteps, prompt_embeds).sample
+                with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp):
+                    # Predict noise
+                    if added_cond_kwargs is not None:
+                        noise_pred = model(
+                            noisy_latents,
+                            timesteps,
+                            prompt_embeds,
+                            added_cond_kwargs=added_cond_kwargs,
+                        ).sample
+                    else:
+                        noise_pred = model(noisy_latents, timesteps, prompt_embeds).sample
 
-                # Compute diffusion loss
-                if config.min_snr_gamma is not None and config.min_snr_gamma > 0:
-                    # Min-SNR weighting (epsilon prediction)
-                    snr = alphas_cumprod[timesteps]
-                    snr = snr / (1 - alphas_cumprod[timesteps])
-                    gamma = torch.full_like(snr, config.min_snr_gamma)
-                    weights = torch.minimum(snr, gamma) / snr
-                    per_sample = torch.nn.functional.mse_loss(
-                        noise_pred, noise, reduction="none"
-                    ).mean(dim=tuple(range(1, noise_pred.ndim)))
-                    loss = (per_sample * weights).mean()
-                else:
-                    loss = torch.nn.functional.mse_loss(noise_pred, noise)
+                    # Compute diffusion loss
+                    pred = noise_pred.float()
+                    target = noise.float()
+                    if config.min_snr_gamma is not None and config.min_snr_gamma > 0:
+                        # Min-SNR weighting (epsilon prediction)
+                        snr = alphas_cumprod[timesteps].float()
+                        snr = snr / (1 - alphas_cumprod[timesteps].float())
+                        gamma = torch.full_like(snr, config.min_snr_gamma)
+                        weights = torch.minimum(snr, gamma) / snr
+                        per_sample = torch.nn.functional.mse_loss(
+                            pred, target, reduction="none"
+                        ).mean(dim=tuple(range(1, pred.ndim)))
+                        loss = (per_sample * weights).mean()
+                    else:
+                        loss = torch.nn.functional.mse_loss(pred, target)
 
             else:
                 raise RuntimeError(
@@ -365,11 +371,18 @@ def train(
             loss = loss / config.grad_accum
 
             # Backward pass
-            loss.backward()
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
 
             # Update weights every grad_accum steps
             if (batch_idx + 1) % config.grad_accum == 0:
-                optimizer.step()
+                if scaler.is_enabled():
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 if lr_scheduler is not None:
                     lr_scheduler.step()
                 optimizer.zero_grad()

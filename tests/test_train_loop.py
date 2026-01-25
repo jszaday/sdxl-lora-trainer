@@ -41,7 +41,7 @@ def select_lora_params_dummy(model):
         yield from model.parameters()
 
 
-@pytest.fixture()
+@pytest.fixture
 def temp_workspace():
     """Create a temporary workspace directory."""
     temp_dir = Path(tempfile.mkdtemp())
@@ -49,7 +49,7 @@ def temp_workspace():
     shutil.rmtree(temp_dir)
 
 
-@pytest.fixture()
+@pytest.fixture
 def temp_data_dir():
     """Create a temporary directory with dummy image files."""
     temp_dir = Path(tempfile.mkdtemp())
@@ -59,7 +59,7 @@ def temp_data_dir():
     shutil.rmtree(temp_dir)
 
 
-@pytest.fixture()
+@pytest.fixture
 def dummy_dataloader():
     """Create a simple in-memory dataloader for testing."""
     # Create fake cached data: [batch_size, channels, height, width]
@@ -196,6 +196,58 @@ def test_train_logs_perf_metrics(temp_workspace, temp_data_dir):
     writer.close()
 
     # Check that final checkpoint exists
+    final_checkpoint = dirs["checkpoints"] / "final.pt"
+    assert final_checkpoint.exists()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for AMP smoke test")
+def test_train_amp_fp16_smoke(temp_workspace, temp_data_dir):
+    """Smoke test AMP/GradScaler path on CUDA."""
+    config = TrainingConfig(
+        checkpoint="dummy.safetensors",
+        train_data=temp_data_dir,
+        steps=1,
+        batch_size=2,
+        workspace=temp_workspace,
+        grad_accum=1,
+        image_size=512,
+        sample_every=1000,
+        log_every=1,
+        mixed_precision="fp16",
+    )
+
+    dirs = create_run_dirs(config.workspace)
+    writer = DummyWriter()
+    model = DummyUNet(in_channels=4, out_channels=4).to("cuda")
+    optimizer = torch.optim.AdamW(select_lora_params_dummy(model), lr=1e-4)
+
+    latents = torch.randn(8, 4, 64, 64)
+    prompt_embeds = torch.randn(8, 77, 2048)
+    pooled_embeds = torch.randn(8, 1280)
+    time_ids = torch.zeros(8, 6)
+    dataset = TensorDataset(latents, prompt_embeds, pooled_embeds, time_ids)
+
+    def collate_fn(batch):
+        return {
+            "latents": torch.stack([item[0] for item in batch]),
+            "prompt_embeds": torch.stack([item[1] for item in batch]),
+            "pooled_embeds": torch.stack([item[2] for item in batch]),
+            "time_ids": torch.stack([item[3] for item in batch]),
+        }
+
+    dataloader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn, drop_last=True)
+
+    train(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        config=config,
+        dirs=dirs,
+        writer=writer,
+        device="cuda",
+        cached_data=True,
+    )
+
     final_checkpoint = dirs["checkpoints"] / "final.pt"
     assert final_checkpoint.exists()
 

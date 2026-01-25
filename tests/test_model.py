@@ -401,7 +401,7 @@ def test_lora_round_trip_export_and_import(tmp_path):
 
     # Step 9: Verify all LoRA modules have correct alpha
     for name, module in unet2.named_modules():
-        if isinstance(module, (LoRALayer, LoRAConv2d)):
+        if isinstance(module, LoRALayer | LoRAConv2d):
             assert module.alpha == 32.0, f"Module {name} has alpha={module.alpha}, expected 32.0"
 
     for name, module in te1_2.named_modules():

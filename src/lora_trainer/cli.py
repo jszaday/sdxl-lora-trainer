@@ -435,6 +435,7 @@ def main() -> None:
             cache_dir=cache_dir,
             batch_size=config.batch_size,
             num_workers=config.num_workers,
+            seed=config.seed,
         )
         print(f"Dataset size: {len(dataloader.dataset)} samples")
         print(f"Batches per epoch: {len(dataloader)}")
@@ -445,6 +446,7 @@ def main() -> None:
             batch_size=config.batch_size,
             bucket_config=bucket_config,
             num_workers=config.num_workers,
+            seed=config.seed,
         )
         print(f"Dataset size: {len(dataloader.dataset)} images")
         print(f"Batches per epoch: {len(dataloader)}")

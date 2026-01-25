@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import random
 from collections import defaultdict
 from pathlib import Path
 
@@ -110,7 +109,8 @@ class ImageFolderWithCaptions(Dataset):
         image_path = metadata["path"]
 
         # Load image
-        image = Image.open(image_path).convert("RGB")
+        with Image.open(image_path) as img:
+            image = img.convert("RGB")
 
         # Resize and crop to bucket dimensions
         bucket = metadata["bucket"]
@@ -155,6 +155,7 @@ class BucketBatchSampler(Sampler):
         batch_size: int,
         shuffle: bool = True,
         drop_last: bool = True,
+        seed: int | None = None,
     ):
         """Initialize the bucket batch sampler.
 
@@ -168,6 +169,9 @@ class BucketBatchSampler(Sampler):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
+        self._seed = int(seed) if seed is not None else int(torch.initial_seed())
+        self._generator = torch.Generator()
+        self._generator.manual_seed(self._seed)
 
         # Group indices by bucket
         self.bucket_indices = defaultdict(list)
@@ -191,8 +195,8 @@ class BucketBatchSampler(Sampler):
         for _bucket_key, indices in self.bucket_indices.items():
             # Shuffle indices within bucket if requested
             if self.shuffle:
-                indices = indices.copy()
-                random.shuffle(indices)
+                order = torch.randperm(len(indices), generator=self._generator).tolist()
+                indices = [indices[i] for i in order]
 
             # Create batches of batch_size
             for i in range(0, len(indices), self.batch_size):
@@ -202,7 +206,8 @@ class BucketBatchSampler(Sampler):
 
         # Shuffle batch order if requested
         if self.shuffle:
-            random.shuffle(all_batches)
+            order = torch.randperm(len(all_batches), generator=self._generator).tolist()
+            all_batches = [all_batches[i] for i in order]
 
         # Yield batches
         for batch in all_batches:
@@ -234,11 +239,15 @@ class CachedBucketBatchSampler(Sampler):
         batch_size: int,
         shuffle: bool = True,
         drop_last: bool = True,
+        seed: int | None = None,
     ):
         self.dataset = dataset
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.drop_last = drop_last
+        self._seed = int(seed) if seed is not None else int(torch.initial_seed())
+        self._generator = torch.Generator()
+        self._generator.manual_seed(self._seed)
 
         # Get latent shapes from dataset
         latent_shapes = dataset.get_latent_shapes()
@@ -268,8 +277,8 @@ class CachedBucketBatchSampler(Sampler):
         for _shape_key, indices in self.shape_indices.items():
             # Shuffle indices within this shape group if requested
             if self.shuffle:
-                indices = indices.copy()
-                random.shuffle(indices)
+                order = torch.randperm(len(indices), generator=self._generator).tolist()
+                indices = [indices[i] for i in order]
 
             # Create batches (treating batch_size as maximum)
             for i in range(0, len(indices), self.batch_size):
@@ -279,7 +288,8 @@ class CachedBucketBatchSampler(Sampler):
 
         # Shuffle batches across all shapes if requested
         if self.shuffle:
-            random.shuffle(all_batches)
+            order = torch.randperm(len(all_batches), generator=self._generator).tolist()
+            all_batches = [all_batches[i] for i in order]
 
         # Yield batches
         for batch in all_batches:
@@ -461,6 +471,7 @@ def build_dataloader(
     bucket_config: BucketConfig,
     num_workers: int = 4,
     shuffle: bool = True,
+    seed: int | None = None,
 ) -> DataLoader:
     """Build a DataLoader for training.
 
@@ -485,6 +496,7 @@ def build_dataloader(
         batch_size=batch_size,
         shuffle=shuffle,
         drop_last=True,
+        seed=seed,
     )
 
     loader_kwargs: dict = {
@@ -507,6 +519,7 @@ def build_cached_dataloader(
     batch_size: int,
     num_workers: int = 4,
     shuffle: bool = True,
+    seed: int | None = None,
 ) -> DataLoader:
     """Build a DataLoader for cached latents and embeddings.
 
@@ -527,6 +540,7 @@ def build_cached_dataloader(
         batch_size=batch_size,
         shuffle=shuffle,
         drop_last=True,
+        seed=seed,
     )
 
     loader_kwargs: dict = {

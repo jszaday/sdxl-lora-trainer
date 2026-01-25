@@ -186,7 +186,7 @@ def test_sample_with_different_guidance_scales():
     assert latents_cfg_7.shape == (1, 4, 256 // 8, 256 // 8)
 
 
-@pytest.fixture
+@pytest.fixture()
 def temp_workspace():
     """Create a temporary workspace directory."""
     temp_dir = Path(tempfile.mkdtemp())

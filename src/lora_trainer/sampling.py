@@ -164,11 +164,7 @@ def encode_prompts_for_sampling(
         return prompt_embeds, pooled_2
 
     # Weighted path: parse and apply weights
-    from .prompt_weighting import (
-        apply_prompt_weights,
-        get_token_positions,
-        parse_weighted_prompt,
-    )
+    from .prompt_weighting import apply_prompt_weights, get_token_positions, parse_weighted_prompt
 
     # Encode empty prompts as reference baseline
     empty_hidden_1, _ = _encode_single_encoder(

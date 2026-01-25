@@ -553,7 +553,7 @@ def select_lora_params(model: nn.Module) -> Iterator[nn.Parameter]:
         Iterator of LoRA parameters (only lora_down and lora_up weights)
     """
     for module in model.modules():
-        if isinstance(module, (LoRALayer, LoRAConv2d)):
+        if isinstance(module, LoRALayer | LoRAConv2d):
             yield from module.lora_down.parameters()
             yield from module.lora_up.parameters()
 
@@ -634,7 +634,7 @@ def _build_lora_key_map(model: nn.Module, prefix: str) -> dict[str, str]:
 
     # Now handle alpha keys separately (they're not in state_dict, need to get from modules)
     for name, module in model.named_modules():
-        if isinstance(module, (LoRALayer, LoRAConv2d)):
+        if isinstance(module, LoRALayer | LoRAConv2d):
             # name is like "add_embedding.linear_1"
             # Create corresponding alpha mapping
             lora_key_base = name.replace(".", "_")
@@ -735,7 +735,7 @@ def load_lora_weights(
                 for part in parts:
                     module = getattr(module, part)
                 # Update alpha if this is a LoRA module
-                if isinstance(module, (LoRALayer, LoRAConv2d)):
+                if isinstance(module, LoRALayer | LoRAConv2d):
                     module.alpha = float(alpha_value)
             except AttributeError:
                 # Module not found, skip
@@ -783,7 +783,7 @@ def extract_lora_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
 
     # Now extract alpha values from LoRALayer and LoRAConv2d modules
     for name, module in model.named_modules():
-        if isinstance(module, (LoRALayer, LoRAConv2d)):
+        if isinstance(module, LoRALayer | LoRAConv2d):
             # Alpha is stored as an instance variable
             alpha_key = f"{name}.alpha"
             # Store as a scalar tensor to match ComfyUI format

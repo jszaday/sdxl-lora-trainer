@@ -158,46 +158,54 @@ def train(
 
     use_cuda_device = device.startswith("cuda") and torch.cuda.is_available()
     copy_stream = torch.cuda.Stream(device=device) if use_cuda_device else None
+    target_device = torch.device(device)
 
     def _async_to_device(batch):
         # Detect batch type: cached (has latents) or raw (has pixel_values)
         is_cached = "latents" in batch
 
+        def _maybe_to_device(tensor):
+            if tensor.device == target_device:
+                return tensor
+            if copy_stream is None:
+                return tensor.to(target_device)
+            return tensor.to(target_device, non_blocking=True)
+
         if copy_stream is None:
             # No async copying - just move to device
             if is_cached:
                 result = {
-                    "latents": batch["latents"].to(device),
-                    "prompt_embeds": batch["prompt_embeds"].to(device),
-                    "pooled_embeds": batch["pooled_embeds"].to(device),
+                    "latents": _maybe_to_device(batch["latents"]),
+                    "prompt_embeds": _maybe_to_device(batch["prompt_embeds"]),
+                    "pooled_embeds": _maybe_to_device(batch["pooled_embeds"]),
                 }
                 if "time_ids" in batch:
-                    result["time_ids"] = batch["time_ids"].to(device)
+                    result["time_ids"] = _maybe_to_device(batch["time_ids"])
                 return result
             else:
                 result = {
-                    "pixel_values": batch["pixel_values"].to(device),
+                    "pixel_values": _maybe_to_device(batch["pixel_values"]),
                     "caption": batch["caption"],
                 }
                 if "time_ids" in batch:
-                    result["time_ids"] = batch["time_ids"].to(device)
+                    result["time_ids"] = _maybe_to_device(batch["time_ids"])
                 return result
 
         # Async copying with CUDA streams
         if is_cached:
             result = {}
             with torch.cuda.stream(copy_stream):
-                result["latents"] = batch["latents"].to(device, non_blocking=True)
-                result["prompt_embeds"] = batch["prompt_embeds"].to(device, non_blocking=True)
-                result["pooled_embeds"] = batch["pooled_embeds"].to(device, non_blocking=True)
+                result["latents"] = _maybe_to_device(batch["latents"])
+                result["prompt_embeds"] = _maybe_to_device(batch["prompt_embeds"])
+                result["pooled_embeds"] = _maybe_to_device(batch["pooled_embeds"])
                 if "time_ids" in batch:
-                    result["time_ids"] = batch["time_ids"].to(device, non_blocking=True)
+                    result["time_ids"] = _maybe_to_device(batch["time_ids"])
         else:
             result = {"caption": batch["caption"]}
             with torch.cuda.stream(copy_stream):
-                result["pixel_values"] = batch["pixel_values"].to(device, non_blocking=True)
+                result["pixel_values"] = _maybe_to_device(batch["pixel_values"])
                 if "time_ids" in batch:
-                    result["time_ids"] = batch["time_ids"].to(device, non_blocking=True)
+                    result["time_ids"] = _maybe_to_device(batch["time_ids"])
         return result
 
     def _wait_for_batch():
@@ -213,6 +221,11 @@ def train(
 
     # Progress bar for global steps
     pbar = tqdm(total=config.steps, desc="Training", unit="step", initial=global_step)
+    if len(dataloader) == 0:
+        raise ValueError(
+            "Dataloader produced zero batches. "
+            "Check batch_size and bucketing/drop_last settings."
+        )
 
     # Optional initial sampling before training starts
     if (
@@ -259,14 +272,14 @@ def train(
 
             if batch_is_cached:
                 # Using pre-cached latents and embeddings
-                latents = batch["latents"].to(device)
-                prompt_embeds = batch["prompt_embeds"].to(device)
-                pooled_embeds = batch["pooled_embeds"].to(device)
+                latents = batch["latents"]
+                prompt_embeds = batch["prompt_embeds"]
+                pooled_embeds = batch["pooled_embeds"]
 
                 # SDXL uses pooled embeddings as added_cond_kwargs
                 added_cond_kwargs = {"text_embeds": pooled_embeds}
                 # Add time_ids (original size, crops, target size)
-                time_ids = batch["time_ids"].to(device)
+                time_ids = batch["time_ids"]
                 added_cond_kwargs["time_ids"] = time_ids
 
             elif use_real_diffusion:
@@ -292,7 +305,7 @@ def train(
                         # SDXL uses pooled embeddings as added_cond_kwargs
                         added_cond_kwargs = {"text_embeds": pooled_embeds}
                         # Add time_ids (original size, crops, target size)
-                        time_ids = batch["time_ids"].to(device)
+                        time_ids = batch["time_ids"]
                         added_cond_kwargs["time_ids"] = time_ids
                     else:
                         # Fallback: use unconditional embeddings

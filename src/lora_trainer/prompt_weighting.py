@@ -183,9 +183,7 @@ def apply_prompt_weights(
     result = prompt_embeds.clone()
 
     # Apply weights to each segment
-    for segment, (start_idx, end_idx) in zip(
-        weighted_segments, token_positions, strict=True
-    ):
+    for segment, (start_idx, end_idx) in zip(weighted_segments, token_positions, strict=True):
         if segment.weight == 1.0:
             # No modification needed
             continue

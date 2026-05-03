@@ -238,7 +238,7 @@ def train(
     target_device = torch.device(device)
     use_amp = use_cuda_device and config.mixed_precision in {"fp16", "bf16"}
     amp_dtype = torch.float16 if config.mixed_precision == "fp16" else torch.bfloat16
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp and config.mixed_precision == "fp16")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp and config.mixed_precision == "fp16")
 
     def _async_to_device(batch):
         # Detect batch type: cached (has latents) or raw (has pixel_values)

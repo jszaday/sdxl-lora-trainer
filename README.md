@@ -261,6 +261,7 @@ Your workspace will contain:
     step_000500_mountain.png    # (if name specified in prompt)
     step_001000_0.png
     step_001000_1.png
+```
 
 ## Resuming Training
 
@@ -279,7 +280,6 @@ python -m lora_trainer.cli \
 - Point `--resume_from` at a specific `.pt` file, or at the `checkpoints/` directory to automatically use the most recent checkpoint.
 - Model and optimizer states are restored and training continues from the saved `global_step`. If the checkpoint step is already >= target `--steps`, the run exits.
 - Validation sampling will also run at step 0 when prompts are provided, so you get a before/after comparison.
-```
 
 ## Development
 

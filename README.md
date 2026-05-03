@@ -12,6 +12,9 @@ This is a focused SDXL LoRA trainer designed for ease of use with ComfyUI-style 
 - Supports both classic LoRA and LyCORIS adapters
 - Well-tested, modular codebase
 
+![TensorBoard Monitoring](assets/tensorboard.png)
+*Example: Training a face LoRA on the [ariadne-face](https://github.com/jszaday/ariadne-face) dataset.*
+
 ## Installation
 
 **Recommended: Use a virtual environment**

@@ -120,14 +120,15 @@ Each sample is saved as an individual image file:
 - `--num_workers`: Data loading workers (default: 4)
 
 **Sampling:**
-- `--scheduler`: Noise scheduler - `simple`, `normal`, `karras` (default: normal)
-- `--sampler`: Sampler algorithm - `euler`, `euler_ancestral`, `ddim`, `heun` (default: euler)
+- `--scheduler`: Noise scheduler - `simple`, `normal`, `karras`, `exponential`, `sgm_uniform` (default: normal)
+- `--sampler`: Sampler algorithm - `euler`, `euler_ancestral`, `heun`, `dpmpp_2m`, `dpmpp_2m_sde`, `dpmpp_sde`, `lms`, `pndm`, `ddim` (default: euler)
 - `--cfg`: Classifier-free guidance scale (default: 7.0)
 - `--sampler_steps`: Diffusion steps for sampling (default: 30)
 - `--sample_prompts`: Path to prompts file
 - `--sample_every`: Generate samples every N steps (default: 500)
 - `--samples_per_prompt`: Number of samples per prompt (default: 1)
 - `--sample_clip_skip`: Clip skip for text_encoder_1 hidden states (1 = penultimate; default: 1)
+- `--enable_training_prompt_weighting`: Enable weighting syntax in training captions (default: False)
 
 **LoRA:**
 - `--adapter`: Adapter spec. Examples: `lora(rank=16,alpha=16)` or `locon(rank=16,alpha=16,dropout=0.1)` (default: `lora`)
@@ -137,6 +138,8 @@ Each sample is saved as an individual image file:
 - `--seed`: Random seed (default: 42)
 - `--mixed_precision`: Mixed precision mode - `no`, `fp16`, `bf16` (default: fp16)
 - `--resume_from`: Checkpoint file or directory to resume training from. If a directory is given, the newest `.pt` file is picked.
+- `--low_vram`: Enable memory-saving bundle (gradient checkpointing + 8-bit optimizer)
+- `--gradient_checkpointing`: Enable gradient checkpointing specifically (saves VRAM)
 
 ### LyCORIS Mode
 
@@ -304,45 +307,30 @@ isort src/ tests/
 ruff check src/ tests/
 ```
 
-## Current Status
+## Features
 
-**Phase 1: Complete** ✓
-- Core training infrastructure
-- CLI with argument parsing
-- Dataset and dataloader
-- Training loop with checkpointing
-- TensorBoard logging
-- Comprehensive test suite
-
-**Phase 2: Complete** ✓
-- Real SDXL UNet integration with diffusers
-- LoRA module injection into attention and feedforward layers
-- Real diffusion loss with noise prediction
-- SDXL dual text encoder support
-- Single-file checkpoint loading (.safetensors)
-- Device selection (CUDA, CPU, MPS)
-
-**Phase 3: Complete** ✓
-- Validation sampling during training
-- Scheduler & sampler integration (ComfyUI-compatible names)
-- Sample image generation with CFG
-- TensorBoard image logging
-
-**Phase 4: Planned**
-- Performance optimizations
-- Enhanced logging and progress tracking
-- Additional UX improvements
-
-**Test Status**: 129 tests passing, 2 skipped
+- **SDXL Training**: Focused support for Stable Diffusion XL LoRA training.
+- **LyCORIS Support**: Native integration for LoHa, LoKr, and other LyCORIS adapters.
+- **Clean CLI**: Familiar flags for ComfyUI users (`--sampler`, `--scheduler`, `--cfg`, etc.).
+- **Aspect Bucketing**: Automatic aspect-ratio bucketing for high-quality training on mixed-resolution datasets.
+- **Fast Feedback**: Real-time progress bars and validation sample generation during training.
+- **Performance Optimized**: Supports gradient checkpointing and 8-bit optimizers for low-VRAM environments.
+- **Flexible Data**: Support for both raw images and pre-cached latents/embeddings for maximum throughput.
+- **TensorBoard Integration**: Detailed logging of loss, learning rate, and validation samples.
 
 ## Contributing
 
 This repository follows strict principles:
 
-1. No dead code - when design changes, old code is deleted
-2. Test-driven development - tests accompany all features
-3. Single responsibility - this tool only trains SDXL LoRA
-4. UX-first design - clear flags, good defaults, obvious behavior
+1. **No dead code**: When design changes, old code is deleted immediately.
+2. **Test-driven**: All features are accompanied by comprehensive tests.
+3. **Single responsibility**: This tool focuses exclusively on SDXL LoRA/LyCORIS training.
+4. **UX-first**: Prioritizes clear flags, sane defaults, and helpful feedback.
+
+To contribute:
+1. Ensure all tests pass: `pytest`
+2. Follow the established style: `black`, `isort`, and `ruff`
+3. Add tests for any new functionality.
 
 ## License
 

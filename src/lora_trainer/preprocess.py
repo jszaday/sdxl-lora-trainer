@@ -21,6 +21,7 @@ def preprocess_dataset(
     device: str = "cuda",
     dtype: torch.dtype = torch.float16,
     batch_size: int = 1,
+    enable_weighting: bool = False,
 ) -> None:
     """Preprocess a dataset by caching latents and text embeddings.
 
@@ -32,6 +33,7 @@ def preprocess_dataset(
         dtype: Data type for models
         batch_size: Batch size for preprocessing (higher = faster but more VRAM)
         bucket_config: Bucket configuration (bucketing always enabled)
+        enable_weighting: Whether to parse and apply prompt weights
     """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +130,7 @@ def preprocess_dataset(
                 tokenizer_1,
                 tokenizer_2,
                 device,
+                enable_weighting=enable_weighting,
             )
 
             # Save each item in the batch

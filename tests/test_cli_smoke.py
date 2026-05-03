@@ -37,7 +37,7 @@ def temp_training_setup():
     shutil.rmtree(temp_dir)
 
 
-@pytest.mark.skip(reason="Requires real SDXL model - Phase 2 loads from HuggingFace")
+@pytest.mark.skip(reason="Requires real SDXL model - loads from HuggingFace")
 def test_cli_runs_successfully(temp_training_setup):
     """Test that CLI runs end-to-end without crashing."""
     # Run the CLI as a subprocess

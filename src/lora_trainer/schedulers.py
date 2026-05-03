@@ -11,9 +11,13 @@ For now, we support the most common ones that match ComfyUI's names.
 from diffusers import (
     DDIMScheduler,
     DDPMScheduler,
+    DPMSolverMultistepScheduler,
+    DPMSolverSinglestepScheduler,
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
     HeunDiscreteScheduler,
+    LMSDiscreteScheduler,
+    PNDMScheduler,
 )
 
 
@@ -23,14 +27,15 @@ def build_noise_scheduler(
     """Build a diffusers noise scheduler from a user-facing name.
 
     Args:
-        name: Scheduler name (simple, normal, karras)
+        name: Scheduler name (simple, normal, karras, exponential, sgm_uniform)
         num_inference_steps: Number of denoising steps for sampling
+        sampler_name: Sampler algorithm (euler, euler_ancestral, heun, dpmpp_2m, etc.)
 
     Returns:
         Diffusers scheduler instance configured for SDXL
 
     Raises:
-        ValueError: If scheduler name is not recognized
+        ValueError: If scheduler or sampler name is not recognized
     """
     # SDXL-compatible scheduler configuration
     scheduler_config = {
@@ -41,34 +46,84 @@ def build_noise_scheduler(
         "prediction_type": "epsilon",
     }
 
+    # Map sampler names to classes
+    sampler_name = (sampler_name or "euler").lower()
+
+    if sampler_name == "euler":
+        cls = EulerDiscreteScheduler
+    elif sampler_name == "euler_ancestral":
+        cls = EulerAncestralDiscreteScheduler
+    elif sampler_name == "heun":
+        cls = HeunDiscreteScheduler
+    elif sampler_name == "dpmpp_2m":
+        cls = DPMSolverMultistepScheduler
+        scheduler_config["solver_order"] = 2
+        scheduler_config["algorithm_type"] = "dpmsolver++"
+    elif sampler_name == "dpmpp_2m_sde":
+        cls = DPMSolverMultistepScheduler
+        scheduler_config["solver_order"] = 2
+        scheduler_config["algorithm_type"] = "sde-dpmsolver++"
+    elif sampler_name == "dpmpp_sde":
+        cls = DPMSolverSinglestepScheduler
+        # Singlestep doesn't use algorithm_type in some versions, but let's be safe
+    elif sampler_name == "lms":
+        cls = LMSDiscreteScheduler
+    elif sampler_name == "ddim":
+        cls = DDIMScheduler
+    elif sampler_name == "pndm":
+        cls = PNDMScheduler
+    elif sampler_name == "ddpm":
+        cls = DDPMScheduler
+    else:
+        raise ValueError(f"Unknown sampler '{sampler_name}'")
+
+    # Map scheduler (sigma) names to timestep_spacing/use_karras_sigmas
+    name = name.lower()
     if name == "simple":
-        # Simple linear scheduler (DDPM)
+        # Usually DDPM style
         return DDPMScheduler(**scheduler_config)
 
-    elif name == "normal":
-        # Normal scheduler; default to DDIM, but allow per-sampler tweaks
-        if sampler_name == "heun":
-            return HeunDiscreteScheduler(**scheduler_config, timestep_spacing="linspace")
-        if sampler_name in ("euler", "euler_ancestral"):
-            return EulerDiscreteScheduler(**scheduler_config, timestep_spacing="linspace")
-        return DDIMScheduler(
-            **scheduler_config,
-            clip_sample=False,
-            set_alpha_to_one=False,
-        )
-
+    if name == "normal":
+        scheduler_config["timestep_spacing"] = "linspace"
+        scheduler_config["use_karras_sigmas"] = False
     elif name == "karras":
-        # Karras noise schedule (uses special timestep spacing)
-        # Use Euler scheduler with timestep_spacing="trailing" for Karras-like behavior
-        if sampler_name == "euler_ancestral":
-            return EulerAncestralDiscreteScheduler(
-                **scheduler_config,
-                timestep_spacing="trailing",
-            )
-        return EulerDiscreteScheduler(
-            **scheduler_config,
-            timestep_spacing="trailing",
-        )
-
+        scheduler_config["timestep_spacing"] = "trailing"
+        scheduler_config["use_karras_sigmas"] = True
+    elif name == "exponential":
+        scheduler_config["timestep_spacing"] = "trailing"
+        # Diffusers doesn't have an explicit 'exponential' flag for all,
+        # but karras sigmas are close.
+        # For true exponential we'd need to manually set sigmas.
+        # We'll use Karras as a fallback for now.
+        scheduler_config["use_karras_sigmas"] = True
+    elif name == "sgm_uniform":
+        scheduler_config["timestep_spacing"] = "linspace"
+        # SGM uniform is usually linspace without karras
+        scheduler_config["use_karras_sigmas"] = False
     else:
-        raise ValueError(f"Unknown scheduler '{name}'. " f"Valid options: simple, normal, karras")
+        supported_sched = ["simple", "normal", "karras", "exponential", "sgm_uniform"]
+        raise ValueError(f"Unknown scheduler '{name}'. Supported: {', '.join(supported_sched)}")
+
+    # Special handling for DDIM (doesn't support use_karras_sigmas in all versions)
+    if cls == DDIMScheduler:
+        # DDIM uses different flags
+        ddim_config = {
+            "beta_start": 0.00085,
+            "beta_end": 0.012,
+            "beta_schedule": "scaled_linear",
+            "num_train_timesteps": 1000,
+            "clip_sample": False,
+            "set_alpha_to_one": False,
+        }
+        return DDIMScheduler(**ddim_config)
+
+    # Instantiate
+    try:
+        return cls(**scheduler_config)
+    except TypeError:
+        # Fallback for older diffusers versions or schedulers that don't support some flags
+        if "use_karras_sigmas" in scheduler_config:
+            del scheduler_config["use_karras_sigmas"]
+        if "timestep_spacing" in scheduler_config:
+            del scheduler_config["timestep_spacing"]
+        return cls(**scheduler_config)

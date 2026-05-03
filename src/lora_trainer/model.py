@@ -1,7 +1,4 @@
-"""Model loading and LoRA parameter selection.
-
-Phase 2: Real SDXL UNet loading with LoRA injection.
-"""
+"""Model loading and LoRA parameter selection."""
 
 import inspect
 from collections.abc import Iterator
@@ -808,8 +805,6 @@ def build_lora_metadata(rank: int | None, alpha: float | None) -> dict[str, str]
 # Backward compatibility: keep load_model() as alias for now
 def load_model(checkpoint: str, device: str = "cpu") -> nn.Module:
     """Load model from checkpoint.
-
-    Phase 2: Loads real SDXL UNet with LoRA.
 
     Args:
         checkpoint: Path to checkpoint or HuggingFace model ID

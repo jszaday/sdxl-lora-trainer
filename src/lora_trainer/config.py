@@ -48,6 +48,7 @@ class TrainingConfig:
     samples_per_prompt: int = 1
     sample_clip_skip: int = 1
     enable_prompt_weighting: bool = True  # Enable A1111/ComfyUI-style prompt weighting
+    enable_training_prompt_weighting: bool = False  # Enable weighting for training captions
 
     # LoRA parameters
     adapter: str = "lora"  # "lora" or "lycoris"
@@ -65,6 +66,8 @@ class TrainingConfig:
     resume_from: Path | None = None  # Optional checkpoint path/dir to resume from
     log_every: int = 10  # Log metrics every N steps (reduces GPU sync overhead)
     min_snr_gamma: float | None = None
+    low_vram: bool = False  # Enable memory-saving optimizations
+    gradient_checkpointing: bool = False  # Enable gradient checkpointing to save VRAM
 
     # Internal fields computed after init
     num_images: int = field(init=False, default=0)
@@ -243,6 +246,8 @@ class TrainingConfig:
                 f"Mixed Precision:     {self.mixed_precision}",
                 f"Seed:                {self.seed}",
                 f"Min SNR Gamma:       {self.min_snr_gamma or 'None'}",
+                f"Low VRAM Mode:       {'Enabled' if self.low_vram else 'Disabled'}",
+                f"Grad Checkpointing:  {'Enabled' if self.gradient_checkpointing else 'Disabled'}",
                 f"Resume From:         {self.resume_from or 'None'}",
                 "",
                 f"Scheduler:           {self.scheduler}",

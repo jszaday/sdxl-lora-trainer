@@ -165,15 +165,25 @@ def parse_args() -> argparse.Namespace:
         "--scheduler",
         type=str,
         default="normal",
-        choices=["simple", "normal", "karras"],
-        help="Noise scheduler for validation sampling (default: normal)",
+        choices=["simple", "normal", "karras", "exponential", "sgm_uniform"],
+        help="Noise scheduler - simple, normal, karras, exponential, sgm_uniform (default: normal)",
     )
     sampling_group.add_argument(
         "--sampler",
         type=str,
         default="euler",
-        choices=["euler", "euler_ancestral", "ddim", "heun"],
-        help="Sampler algorithm for validation sampling (default: euler)",
+        choices=[
+            "euler",
+            "euler_ancestral",
+            "heun",
+            "dpmpp_2m",
+            "dpmpp_2m_sde",
+            "dpmpp_sde",
+            "lms",
+            "pndm",
+            "ddim",
+        ],
+        help="Sampler algorithm (default: euler)",
     )
     sampling_group.add_argument(
         "--cfg",
@@ -225,6 +235,14 @@ def parse_args() -> argparse.Namespace:
         help="Disable prompt weighting (treat parentheses as literal text)",
     )
 
+    # Training weighting
+    parser.add_argument(
+        "--enable_training_prompt_weighting",
+        action="store_true",
+        default=False,
+        help="Enable A1111/ComfyUI-style prompt weighting for training captions",
+    )
+
     # LoRA arguments
     lora_group = parser.add_argument_group("LoRA arguments")
     lora_group.add_argument(
@@ -240,6 +258,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Enable gradient checkpointing to save VRAM (slower but uses ~15-20GB less)",
+    )
+    misc_group.add_argument(
+        "--low_vram",
+        action="store_true",
+        default=False,
+        help="Enable memory-saving bundle (grad checkpointing + 8-bit optimizer)",
     )
     misc_group.add_argument(
         "--device",
@@ -313,6 +337,18 @@ def main() -> None:
     lycoris_factor = adapter_params.get("lycoris_factor", TrainingConfig.lycoris_factor)
     lycoris_dropout = adapter_params.get("lycoris_dropout", TrainingConfig.lycoris_dropout)
 
+    # Bundle low-VRAM optimizations
+    optimizer = args.optimizer
+    gradient_checkpointing = args.gradient_checkpointing
+    if args.low_vram:
+        gradient_checkpointing = True
+        if optimizer == "adamw":
+            optimizer = "adamw8bit"
+        print("\nLow-VRAM mode enabled:")
+        print("  - Gradient checkpointing: ON")
+        if optimizer == "adamw8bit":
+            print("  - 8-bit optimizer: adamw8bit")
+
     # Build config from arguments
     try:
         config = TrainingConfig(
@@ -323,7 +359,7 @@ def main() -> None:
             workspace=args.workspace,
             learning_rate=args.learning_rate,
             grad_accum=args.grad_accum,
-            optimizer=args.optimizer,
+            optimizer=optimizer,
             lr_scheduler=lr_scheduler,
             lr_warmup_steps=lr_warmup_steps,
             lr_num_cycles=lr_num_cycles,
@@ -343,6 +379,8 @@ def main() -> None:
             sample_every=args.sample_every,
             samples_per_prompt=args.samples_per_prompt,
             sample_clip_skip=args.sample_clip_skip,
+            enable_prompt_weighting=args.enable_prompt_weighting,
+            enable_training_prompt_weighting=args.enable_training_prompt_weighting,
             adapter=adapter,
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
@@ -356,6 +394,8 @@ def main() -> None:
             mixed_precision=args.mixed_precision,
             resume_from=args.resume_from,
             min_snr_gamma=args.min_snr_gamma,
+            low_vram=args.low_vram,
+            gradient_checkpointing=gradient_checkpointing,
         )
     except ValueError as e:
         print(f"Configuration error: {e}", file=sys.stderr)
@@ -427,6 +467,7 @@ def main() -> None:
                 dtype=dtype,
                 # TODO: Consider a separate --preprocess-batch-size flag if decoupling is useful.
                 batch_size=config.batch_size,
+                enable_weighting=config.enable_training_prompt_weighting,
             )
             print("\n✓ Preprocessing complete!\n")
 
@@ -481,7 +522,7 @@ def main() -> None:
     )
 
     # Enable gradient checkpointing if requested
-    if args.gradient_checkpointing:
+    if config.gradient_checkpointing:
         model.enable_gradient_checkpointing()
         # TODO: enable gradient checkpointing for text encoders when training on-the-fly.
         print("Gradient checkpointing enabled (saves VRAM, ~20% slower)")

@@ -45,15 +45,25 @@ def parse_args() -> argparse.Namespace:
         "--scheduler",
         type=str,
         default="normal",
-        choices=["simple", "normal", "karras"],
+        choices=["simple", "normal", "karras", "exponential", "sgm_uniform"],
         help="Noise scheduler for sampling (default: normal)",
     )
     sampling.add_argument(
         "--sampler",
         type=str,
         default="euler",
-        choices=["euler", "euler_ancestral", "ddim", "heun"],
-        help="Sampler algorithm (for UX parity; currently uses scheduler only)",
+        choices=[
+            "euler",
+            "euler_ancestral",
+            "heun",
+            "dpmpp_2m",
+            "dpmpp_2m_sde",
+            "dpmpp_sde",
+            "lms",
+            "pndm",
+            "ddim",
+        ],
+        help="Sampler algorithm (default: euler)",
     )
     sampling.add_argument(
         "--cfg",

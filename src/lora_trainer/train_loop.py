@@ -15,26 +15,13 @@ from tqdm import tqdm
 from lora_converter.converter import convert_lora_state
 
 from .logging import log_perf_metrics
+from .prompt_weighting import apply_prompt_weights, get_token_positions, parse_weighted_prompt
 from .sampling import run_validation_samples
 
 if TYPE_CHECKING:
     from .config import TrainingConfig
 
 
-# TODO: Prompt weighting for training
-# To add training-time prompt weighting:
-# 1. Import from prompt_weighting module (parse_weighted_prompt,
-#    apply_prompt_weights, get_token_positions)
-# 2. Add enable_training_prompt_weighting config flag (default False for safety)
-# 3. Apply same logic as encode_prompts_for_sampling() in sampling.py:
-#    - Detect if any captions have weighting syntax: "(" or ":" in caption
-#    - Encode empty reference prompts for baseline
-#    - For each caption, parse weighted segments
-#    - Get token positions for each segment (separate for each encoder)
-#    - Apply weights to hidden states before concatenation
-# 4. Test impact on training convergence and loss computation
-# Note: This affects loss computation and may change training dynamics.
-# Consider starting with a small learning rate and monitoring loss curves carefully.
 def encode_prompts(
     captions: list[str],
     text_encoder_1,
@@ -42,8 +29,11 @@ def encode_prompts(
     tokenizer_1,
     tokenizer_2,
     device: str,
-) -> torch.Tensor:
+    enable_weighting: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Encode text prompts using SDXL's dual text encoders.
+
+    Supports ComfyUI-style weighting if enabled.
 
     Args:
         captions: List of text captions
@@ -52,43 +42,130 @@ def encode_prompts(
         tokenizer_1: First tokenizer
         tokenizer_2: Second tokenizer
         device: Device for computation
+        enable_weighting: Whether to parse and apply prompt weights
 
     Returns:
-        Pooled prompt embeddings tensor
+        Tuple of (prompt_embeds, pooled_prompt_embeds)
     """
-    # Tokenize with both tokenizers
-    tokens_1 = tokenizer_1(
-        captions,
+    # Check if weighting is needed
+    use_weighting = enable_weighting and any("(" in c or ":" in c for c in captions)
+
+    if not use_weighting:
+        # Fast path: no weighting
+        tokens_1 = tokenizer_1(
+            captions,
+            padding="max_length",
+            max_length=tokenizer_1.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+
+        tokens_2 = tokenizer_2(
+            captions,
+            padding="max_length",
+            max_length=tokenizer_2.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+
+        with torch.no_grad():
+            encoder_output_1 = text_encoder_1(tokens_1, output_hidden_states=True)
+            encoder_output_2 = text_encoder_2(tokens_2, output_hidden_states=True)
+
+        prompt_embeds = torch.cat(
+            [
+                encoder_output_1.hidden_states[-2],
+                encoder_output_2.hidden_states[-2],
+            ],
+            dim=-1,
+        )
+        pooled_prompt_embeds = encoder_output_2[0]
+        return prompt_embeds, pooled_prompt_embeds
+
+    # Weighted path
+    # Encode empty prompts for baseline
+    empty_tokens_1 = tokenizer_1(
+        [""] * len(captions),
         padding="max_length",
         max_length=tokenizer_1.model_max_length,
         truncation=True,
         return_tensors="pt",
     ).input_ids.to(device)
 
-    tokens_2 = tokenizer_2(
-        captions,
+    empty_tokens_2 = tokenizer_2(
+        [""] * len(captions),
         padding="max_length",
         max_length=tokenizer_2.model_max_length,
         truncation=True,
         return_tensors="pt",
     ).input_ids.to(device)
 
-    # Encode with both encoders
     with torch.no_grad():
-        encoder_output_1 = text_encoder_1(tokens_1, output_hidden_states=True)
-        encoder_output_2 = text_encoder_2(tokens_2, output_hidden_states=True)
+        empty_out_1 = text_encoder_1(empty_tokens_1, output_hidden_states=True)
+        empty_out_2 = text_encoder_2(empty_tokens_2, output_hidden_states=True)
 
-    # SDXL uses penultimate hidden states from encoder 1 and pooled output from encoder 2
+    empty_hidden_1 = empty_out_1.hidden_states[-2]
+    empty_hidden_2 = empty_out_2.hidden_states[-2]
+
+    weighted_hidden_1 = []
+    weighted_hidden_2 = []
+    pooled_list = []
+
+    for i, caption in enumerate(captions):
+        segments = parse_weighted_prompt(caption)
+
+        # Encode full prompt normally first
+        tokens_1 = tokenizer_1(
+            [caption],
+            padding="max_length",
+            max_length=tokenizer_1.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+
+        tokens_2 = tokenizer_2(
+            [caption],
+            padding="max_length",
+            max_length=tokenizer_2.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+
+        with torch.no_grad():
+            out_1 = text_encoder_1(tokens_1, output_hidden_states=True)
+            out_2 = text_encoder_2(tokens_2, output_hidden_states=True)
+
+        hidden_1 = out_1.hidden_states[-2][0]
+        hidden_2 = out_2.hidden_states[-2][0]
+        pooled = out_2[0][0]
+
+        if not segments or all(s.weight == 1.0 for s in segments):
+            weighted_hidden_1.append(hidden_1)
+            weighted_hidden_2.append(hidden_2)
+            pooled_list.append(pooled)
+            continue
+
+        # Map segments to tokens
+        texts = [s.text for s in segments]
+        pos_1 = get_token_positions(texts, tokenizer_1, tokenizer_1.model_max_length)
+        pos_2 = get_token_positions(texts, tokenizer_2, tokenizer_2.model_max_length)
+
+        # Apply weights
+        w_h1 = apply_prompt_weights(hidden_1, segments, empty_hidden_1[i], pos_1)
+        w_h2 = apply_prompt_weights(hidden_2, segments, empty_hidden_2[i], pos_2)
+
+        weighted_hidden_1.append(w_h1)
+        weighted_hidden_2.append(w_h2)
+        pooled_list.append(pooled)
+
     prompt_embeds = torch.cat(
         [
-            encoder_output_1.hidden_states[-2],
-            encoder_output_2.hidden_states[-2],
+            torch.stack(weighted_hidden_1),
+            torch.stack(weighted_hidden_2),
         ],
         dim=-1,
     )
-
-    # Get pooled embeddings
-    pooled_prompt_embeds = encoder_output_2[0]
+    pooled_prompt_embeds = torch.stack(pooled_list)
 
     return prompt_embeds, pooled_prompt_embeds
 
@@ -304,6 +381,9 @@ def train(
                             tokenizer_1,
                             tokenizer_2,
                             device,
+                            enable_weighting=getattr(
+                                config, "enable_training_prompt_weighting", False
+                            ),
                         )
                         # SDXL uses pooled embeddings as added_cond_kwargs
                         added_cond_kwargs = {"text_embeds": pooled_embeds}

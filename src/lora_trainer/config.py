@@ -68,6 +68,8 @@ class TrainingConfig:
     min_snr_gamma: float | None = None
     low_vram: bool = False  # Enable memory-saving optimizations
     gradient_checkpointing: bool = False  # Enable gradient checkpointing to save VRAM
+    torch_compile: bool = False  # Enable torch.compile for UNet
+    tf32: bool = True  # Enable TF32 for faster matmuls on Ampere+ GPUs
 
     # Internal fields computed after init
     num_images: int = field(init=False, default=0)
@@ -248,6 +250,8 @@ class TrainingConfig:
                 f"Min SNR Gamma:       {self.min_snr_gamma or 'None'}",
                 f"Low VRAM Mode:       {'Enabled' if self.low_vram else 'Disabled'}",
                 f"Grad Checkpointing:  {'Enabled' if self.gradient_checkpointing else 'Disabled'}",
+                f"Torch Compile:       {'Enabled' if self.torch_compile else 'Disabled'}",
+                f"TF32 Matmuls:        {'Enabled' if self.tf32 else 'Disabled'}",
                 f"Resume From:         {self.resume_from or 'None'}",
                 "",
                 f"Scheduler:           {self.scheduler}",

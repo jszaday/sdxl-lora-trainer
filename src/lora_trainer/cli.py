@@ -260,6 +260,24 @@ def parse_args() -> argparse.Namespace:
         help="Enable gradient checkpointing to save VRAM (slower but uses ~15-20GB less)",
     )
     misc_group.add_argument(
+        "--torch_compile",
+        action="store_true",
+        default=False,
+        help="Enable torch.compile for the UNet (takes ~5-10m to compile, but faster training)",
+    )
+    misc_group.add_argument(
+        "--tf32",
+        action="store_true",
+        default=True,
+        help="Enable TF32 for faster matmuls on Ampere+ GPUs (default: True)",
+    )
+    misc_group.add_argument(
+        "--no-tf32",
+        action="store_false",
+        dest="tf32",
+        help="Disable TF32 and use full float32 for matmuls (slower, more precise)",
+    )
+    misc_group.add_argument(
         "--low_vram",
         action="store_true",
         default=False,
@@ -396,6 +414,8 @@ def main() -> None:
             min_snr_gamma=args.min_snr_gamma,
             low_vram=args.low_vram,
             gradient_checkpointing=gradient_checkpointing,
+            torch_compile=args.torch_compile,
+            tf32=args.tf32,
         )
     except ValueError as e:
         print(f"Configuration error: {e}", file=sys.stderr)

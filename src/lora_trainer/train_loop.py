@@ -208,8 +208,33 @@ def train(
         tokenizer_2: Second tokenizer (optional for testing)
         cached_data: Whether the dataloader yields cached latents/embeds
     """
+    # Performance optimizations
+    if device.startswith("cuda"):
+        # Enable TF32 for faster matmuls on Ampere+ GPUs
+        if config.tf32:
+            torch.set_float32_matmul_precision("high")
+            torch.backends.cudnn.allow_tf32 = True
+
+        # Enable cudnn autotuner
+        torch.backends.cudnn.benchmark = True
+
+        # Enable memory efficient attention if available
+        try:
+            model.enable_xformers_memory_efficient_attention()
+        except Exception:
+            # Fallback to SDPA (Torch 2.0+ default)
+            pass
+
     model.train()
-    model = model.to(device)
+    model = model.to(device, memory_format=torch.channels_last)
+
+    # Apply torch.compile if requested
+    if config.torch_compile:
+        print("Compiling UNet with torch.compile... (this may take several minutes)")
+        # Use default mode instead of reduce-overhead for better stability with 
+        # dynamic shapes (bucketing) and Python 3.13.
+        model = torch.compile(model)
+
     # Set up noise scheduler for diffusion training
     noise_scheduler = DDPMScheduler(
         beta_start=0.00085,
@@ -224,7 +249,7 @@ def train(
     use_real_diffusion = vae is not None and not cached_data
 
     if use_real_diffusion:
-        vae = vae.to(device)
+        vae = vae.to(device, memory_format=torch.channels_last)
         vae.eval()
         if text_encoder_1 is not None:
             text_encoder_1 = text_encoder_1.to(device)
@@ -465,7 +490,7 @@ def train(
                     optimizer.step()
                 if lr_scheduler is not None:
                     lr_scheduler.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
 
                 global_step += 1
 

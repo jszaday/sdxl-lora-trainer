@@ -59,9 +59,16 @@ def preprocess_dataset(
     else:
         print(f"Using aspect-ratio bucketing with {len(bucket_config.buckets)} buckets")
 
+    # Performance optimizations
+    if device.startswith("cuda"):
+        torch.set_float32_matmul_precision("high")
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+
     # Load VAE
     print(f"\nLoading VAE from {checkpoint}...")
     vae = load_vae(checkpoint, device=device, dtype=dtype)
+    vae = vae.to(memory_format=torch.channels_last)
     vae.eval()
 
     # Load text encoders
@@ -81,6 +88,12 @@ def preprocess_dataset(
     )
     text_encoder_1.eval()
     text_encoder_2.eval()
+
+    # Enable attention optimizations
+    try:
+        vae.enable_xformers_memory_efficient_attention()
+    except Exception:
+        pass
 
     # When multiple buckets are in play (auto/all or top N), images can differ in size.
     # In that case we need batch_size=1 to avoid stacking mismatched tensors.
@@ -116,7 +129,9 @@ def preprocess_dataset(
                     batch_time_ids.append(item["time_ids"])
 
             # Stack pixel values (all same size when batch_size=1 or no bucketing)
-            pixel_values = torch.stack(batch_items).to(device).to(dtype)
+            pixel_values = torch.stack(batch_items).to(
+                device, dtype=dtype, memory_format=torch.channels_last
+            )
 
             # Encode images to latents
             latents = vae.encode(pixel_values).latent_dist.sample()

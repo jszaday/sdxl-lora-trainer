@@ -35,10 +35,17 @@ optim = [
     "bitsandbytes",
     "nvidia-ml-py",
 ]
+trt = [
+    "tensorrt>=10.13.0",
+    "onnx>=1.15.0",
+    "onnxruntime-gpu>=1.17.0",
+]
 
 [project.scripts]
 lora-train = "lora_trainer.cli:main"
 lora-convert = "lora_converter.cli:main"
+lora-build-trt = "lora_trainer.build_trt_cli:main"
+lora-infer-trt = "lora_trainer.infer_trt_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

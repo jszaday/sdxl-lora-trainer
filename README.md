@@ -31,6 +31,12 @@ pip install -e .
 pip install -e ".[dev]"
 ```
 
+TensorRT support uses NVIDIA's Python package index:
+
+```bash
+pip install -e ".[trt]" --extra-index-url https://pypi.nvidia.com
+```
+
 ## Quick Start
 
 ```bash
@@ -191,6 +197,41 @@ python -m lora_trainer.sampler_cli \
 - Each sample is logged separately to TensorBoard at `{workspace}/tb/` with unique tags (`samples/0`, `samples/mountain`, etc.).
 
 **Note:** When loading a checkpoint, adapter parameters (rank, alpha, etc.) are automatically detected and loaded from the checkpoint. You typically only need to specify `--adapter` type and optionally `--lora_checkpoint` path.
+
+### Frozen Inference CLI
+
+Run a single SDXL inference pass with fixed SDXL-native resolutions and optional starting latents:
+
+```bash
+python -m lora_trainer.infer_trt_cli \
+  --checkpoint stabilityai/stable-diffusion-xl-base-1.0 \
+  --prompt "a cinematic portrait, detailed skin, soft rim light" \
+  --negative "low-res, blurry" \
+  --resolution 1216x832 \
+  --scheduler karras \
+  --sampler euler \
+  --cfg 5.5 \
+  --sampler_steps 30 \
+  --output sample.png
+```
+
+Supported resolutions are the SDXL cheat-sheet shapes: `1024x1024`, `1152x896`,
+`1216x832`, `1344x768`, `1536x640`, `896x1152`, `832x1216`, `768x1344`,
+and `640x1536`. `--latents` accepts a `.safetensors` or torch checkpoint with a
+`latents` tensor and keeps denoising tensors on the selected device. Use
+`--save_latents` to write final latents before decode.
+
+The default backend is TensorRT. Missing UNet engines are built automatically
+and cached by checkpoint SHA256, optional LoRA SHA256, resolution, precision,
+and export settings:
+
+```bash
+python -m lora_trainer.infer_trt_cli ... --backend trt --engine_dir engines
+```
+
+Use `--backend torch --compile_unet` only as a same-shape baseline before
+profiling TensorRT. Pass `--no_build_engine` to require a cache hit, or
+`--force_build_engine` to re-export ONNX and rebuild the TensorRT plan.
 
 ### Checkpoint Conversion
 

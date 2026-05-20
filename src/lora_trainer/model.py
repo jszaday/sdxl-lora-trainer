@@ -18,6 +18,13 @@ if TYPE_CHECKING:
 _SINGLE_FILE_CACHE = {}
 
 
+def clear_single_file_cache() -> None:
+    """Clear cached single-file diffusers pipelines."""
+    _SINGLE_FILE_CACHE.clear()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def _require_lycoris() -> tuple["LycorisNetwork", Any]:
     """Import LyCORIS lazily to avoid hard dependency when unused."""
     try:
@@ -208,6 +215,43 @@ class LoRAConv2d(nn.Module):
         return original_output + lora_output * scale
 
 
+def merge_lora_layers(model: nn.Module) -> nn.Module:
+    """Merge in-place LoRA wrappers into their wrapped base layers.
+
+    This is intended for frozen inference/export. It removes LoRA module
+    overhead and leaves the model with regular Linear/Conv2d layers.
+    """
+
+    def merge_recursive(module: nn.Module) -> None:
+        for name, child in list(module.named_children()):
+            if isinstance(child, LoRALayer):
+                merged = child.original_layer
+                scale = (child.alpha / child.rank) if child.rank > 0 else 1.0
+                delta = child.lora_up.weight @ child.lora_down.weight
+                with torch.no_grad():
+                    merged.weight.add_(delta.to(merged.weight.dtype) * scale)
+                setattr(module, name, merged)
+                continue
+
+            if isinstance(child, LoRAConv2d):
+                merged = child.original_layer
+                if child.lora_down.groups != 1:
+                    raise ValueError("Cannot merge grouped LoRAConv2d layers for frozen inference")
+                scale = (child.alpha / child.rank) if child.rank > 0 else 1.0
+                up = child.lora_up.weight[:, :, 0, 0]
+                down = child.lora_down.weight
+                delta = torch.einsum("or,rihw->oihw", up, down)
+                with torch.no_grad():
+                    merged.weight.add_(delta.to(merged.weight.dtype) * scale)
+                setattr(module, name, merged)
+                continue
+
+            merge_recursive(child)
+
+    merge_recursive(model)
+    return model
+
+
 def inject_lora_into_unet(
     unet: UNet2DConditionModel,
     rank: int = 16,
@@ -321,7 +365,7 @@ def load_sdxl_unet(
     checkpoint_or_model_id: str,
     device: str = "cpu",
     dtype: torch.dtype = torch.float32,
-    lora_rank: int = 16,
+    lora_rank: int | None = 16,
     lora_alpha: float = 16.0,
     adapter: str = "lora",
     lycoris_dim: int | None = None,
@@ -372,7 +416,8 @@ def load_sdxl_unet(
     adapter = adapter.lower()
     lyco_net = None
     if adapter == "lora":
-        unet = inject_lora_into_unet(unet, rank=lora_rank, alpha=lora_alpha)
+        if lora_rank is not None:
+            unet = inject_lora_into_unet(unet, rank=lora_rank, alpha=lora_alpha)
     elif adapter == "lycoris":
         lyco_net = apply_lycoris_adapter(
             unet,

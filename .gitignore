@@ -52,6 +52,8 @@ Thumbs.db
 
 # Project specific
 runs/
+engines/
+outputs/
 *.safetensors
 *.ckpt
 *.pt

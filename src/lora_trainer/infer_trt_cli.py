@@ -132,6 +132,11 @@ def parse_args() -> argparse.Namespace:
         help="Apply torch.compile to the UNet backend for fixed-shape inference.",
     )
     parser.add_argument(
+        "--no_progress",
+        action="store_true",
+        help="Disable tqdm progress output, useful when profiling.",
+    )
+    parser.add_argument(
         "--scheduler",
         choices=["simple", "normal", "karras", "exponential", "sgm_uniform"],
         default="karras",
@@ -354,6 +359,7 @@ def main() -> None:
         latents=initial_latents,
         seed=args.seed,
         denoise=args.denoise,
+        progress=not args.no_progress,
     )
 
     if args.save_latents is not None:

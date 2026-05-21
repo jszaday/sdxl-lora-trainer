@@ -1,5 +1,7 @@
 """Device-resident SDXL denoise loop for frozen inference."""
 
+from collections.abc import Callable
+
 import torch
 from tqdm import tqdm
 
@@ -48,6 +50,7 @@ def sample_frozen_sdxl(
     seed: int | None = None,
     denoise: float = 1.0,
     progress: bool = True,
+    on_step: Callable[[int, int], None] | None = None,
 ) -> torch.Tensor:
     """Run SDXL sampling while keeping loop tensors on device."""
     batch_size = int(prompt_embeds.shape[0])
@@ -92,21 +95,31 @@ def sample_frozen_sdxl(
         timesteps = timesteps[-keep:]
 
     iterator = tqdm(timesteps, desc="Sampling", leave=False) if progress else timesteps
-    for timestep in iterator:
-        latent_model_input = torch.cat([latents, latents], dim=0)
-        latent_model_input = scheduler.scale_model_input(latent_model_input, timestep)
-        timestep_input = timestep.to(device=device, dtype=torch.float32).expand(
-            latent_model_input.shape[0]
-        )
+    if device == "cuda":
+        torch.cuda.cudart().cudaProfilerStart()
+        torch.cuda.nvtx.range_push("sdxl_denoise")
+    try:
+        for i, timestep in enumerate(iterator):
+            latent_model_input = torch.cat([latents, latents], dim=0)
+            latent_model_input = scheduler.scale_model_input(latent_model_input, timestep)
+            timestep_input = timestep.to(device=device, dtype=torch.float32).expand(
+                latent_model_input.shape[0]
+            )
 
-        noise_pred = unet_backend(
-            latent_model_input,
-            timestep_input,
-            prompt_embeds_input,
-            added_cond_kwargs=added_cond_kwargs,
-        )
-        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-        latents = scheduler.step(noise_pred, timestep, latents).prev_sample
+            noise_pred = unet_backend(
+                latent_model_input,
+                timestep_input,
+                prompt_embeds_input,
+                added_cond_kwargs=added_cond_kwargs,
+            )
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            latents = scheduler.step(noise_pred, timestep, latents).prev_sample
+            if on_step is not None:
+                on_step(i + 1, len(timesteps))
+    finally:
+        if device == "cuda":
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.cudart().cudaProfilerStop()
 
     return latents

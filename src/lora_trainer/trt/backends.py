@@ -156,8 +156,12 @@ class TensorRTUnetBackend:
         current_stream = torch.cuda.current_stream(sample.device)
         execution_stream = self._execution_stream(sample.device)
         execution_stream.wait_stream(current_stream)
-        ok = self.context.execute_async_v3(stream_handle=execution_stream.cuda_stream)
-        if not ok:
-            raise TensorRTUnavailableError("TensorRT UNet execution failed")
-        current_stream.wait_stream(execution_stream)
+        torch.cuda.nvtx.range_push("trt_unet")
+        try:
+            ok = self.context.execute_async_v3(stream_handle=execution_stream.cuda_stream)
+            if not ok:
+                raise TensorRTUnavailableError("TensorRT UNet execution failed")
+            current_stream.wait_stream(execution_stream)
+        finally:
+            torch.cuda.nvtx.range_pop()
         return output

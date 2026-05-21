@@ -133,7 +133,7 @@ Help strings must explain **what a parameter does in practice**, not just restat
 
 ## Coding Standards
 
-* Use `black` + `isort` + `ruff` (or equivalent) for all code.
+* Use `ruff format` + `ruff check` for all code.
 * Type hints are required on public functions and core dataclasses.
 * Keep functions short; if something needs explaining in comments, consider splitting it.
 * Non-obvious logic gets short, pointed comments. No comment novels.

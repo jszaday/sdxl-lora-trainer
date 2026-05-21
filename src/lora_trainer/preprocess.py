@@ -53,8 +53,7 @@ def preprocess_dataset(
     print(f"Found {len(dataset)} images")
     if bucket_config.num_buckets == 1:
         print(
-            f"Using fixed size training: "
-            f"{bucket_config.train_width}x{bucket_config.train_height}"
+            f"Using fixed size training: {bucket_config.train_width}x{bucket_config.train_height}"
         )
     else:
         print(f"Using aspect-ratio bucketing with {len(bucket_config.buckets)} buckets")

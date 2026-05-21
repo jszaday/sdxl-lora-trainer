@@ -343,11 +343,8 @@ pytest --cov=lora_trainer --cov-report=html
 ### Code Formatting
 
 ```bash
-# Format code
-black src/ tests/
-isort src/ tests/
-
-# Lint
+# Format and lint
+ruff format src/ tests/
 ruff check src/ tests/
 ```
 
@@ -373,7 +370,7 @@ This repository follows strict principles:
 
 To contribute:
 1. Ensure all tests pass: `pytest`
-2. Follow the established style: `black`, `isort`, and `ruff`
+2. Follow the established style: `ruff format` and `ruff check`
 3. Add tests for any new functionality.
 
 ## License

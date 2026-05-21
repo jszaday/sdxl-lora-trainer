@@ -175,8 +175,7 @@ def apply_prompt_weights(
     """
     if len(weighted_segments) != len(token_positions):
         raise ValueError(
-            f"Mismatched segments ({len(weighted_segments)}) "
-            f"and positions ({len(token_positions)})"
+            f"Mismatched segments ({len(weighted_segments)}) and positions ({len(token_positions)})"
         )
 
     # Clone to avoid modifying original

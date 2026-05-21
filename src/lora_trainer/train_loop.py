@@ -303,8 +303,7 @@ def train(
     pbar = tqdm(total=config.steps, desc="Training", unit="step", initial=global_step)
     if len(dataloader) == 0:
         raise ValueError(
-            "Dataloader produced zero batches. "
-            "Check batch_size and bucketing/drop_last settings."
+            "Dataloader produced zero batches. Check batch_size and bucketing/drop_last settings."
         )
 
     # Optional initial sampling before training starts

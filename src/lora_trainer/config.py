@@ -150,9 +150,7 @@ class TrainingConfig:
         if self.lycoris_alpha <= 0:
             raise ValueError(f"lycoris_alpha must be positive, got {self.lycoris_alpha}")
         if self.lycoris_dropout is not None and not (0.0 <= self.lycoris_dropout <= 1.0):
-            raise ValueError(
-                "lycoris_dropout must be between 0 and 1, " f"got {self.lycoris_dropout}"
-            )
+            raise ValueError(f"lycoris_dropout must be between 0 and 1, got {self.lycoris_dropout}")
 
         # Validate image size
         if self.image_size <= 0 or self.image_size % 8 != 0:

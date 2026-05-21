@@ -41,7 +41,7 @@ def select_lora_params_dummy(model):
         yield from model.parameters()
 
 
-@pytest.fixture
+@pytest.fixture()
 def temp_workspace():
     """Create a temporary workspace directory."""
     temp_dir = Path(tempfile.mkdtemp())
@@ -49,7 +49,7 @@ def temp_workspace():
     shutil.rmtree(temp_dir)
 
 
-@pytest.fixture
+@pytest.fixture()
 def temp_data_dir():
     """Create a temporary directory with dummy image files."""
     temp_dir = Path(tempfile.mkdtemp())
@@ -59,7 +59,7 @@ def temp_data_dir():
     shutil.rmtree(temp_dir)
 
 
-@pytest.fixture
+@pytest.fixture()
 def dummy_dataloader():
     """Create a simple in-memory dataloader for testing."""
     # Create fake cached data: [batch_size, channels, height, width]

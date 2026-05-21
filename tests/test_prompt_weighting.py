@@ -177,21 +177,21 @@ class TestGetTokenPositions:
         segments = ["hello world"]
         positions = get_token_positions(segments, mock_tokenizer)
         assert len(positions) == 1
-        assert positions[0] == (0, 2)  # 2 tokens
+        assert positions[0] == (1, 3)  # BOS at 0, then 2 tokens
 
     def test_multiple_segments(self, mock_tokenizer):
         segments = ["hello world", "foo bar"]
         positions = get_token_positions(segments, mock_tokenizer)
         assert len(positions) == 2
-        assert positions[0] == (0, 2)  # "hello world" = 2 tokens
-        assert positions[1] == (2, 4)  # "foo bar" = 2 tokens
+        assert positions[0] == (1, 3)  # BOS at 0; "hello world" = 2 tokens
+        assert positions[1] == (3, 5)  # "foo bar" = 2 tokens
 
     def test_empty_segment(self, mock_tokenizer):
         segments = ["hello", "", "world"]
         positions = get_token_positions(segments, mock_tokenizer)
         assert len(positions) == 3
         # Empty segment should have zero range
-        assert positions[1] == (1, 1)
+        assert positions[1] == (2, 2)
 
 
 class TestApplyPromptWeights:

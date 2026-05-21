@@ -196,17 +196,19 @@ def encode_prompts_for_sampling(
             pooled_embeds_list.append(pooled[0])
             continue
 
-        # Get token positions for each segment
+        # Encode the clean text (syntax stripped) so token positions match the
+        # segment boundaries tracked below — the raw prompt has `(`, `:weight`,
+        # `)` tokens that shift everything if encoded as-is.
         segment_texts = [s.text for s in segments]
+        plain_text = "".join(segment_texts)
         positions_1 = get_token_positions(segment_texts, tokenizer_1, tokenizer_1.model_max_length)
         positions_2 = get_token_positions(segment_texts, tokenizer_2, tokenizer_2.model_max_length)
 
-        # Encode full prompt
         hidden_1, _ = _encode_single_encoder(
-            [prompt], text_encoder_1, tokenizer_1, device, clip_skip
+            [plain_text], text_encoder_1, tokenizer_1, device, clip_skip
         )
         hidden_2, pooled = _encode_single_encoder(
-            [prompt], text_encoder_2, tokenizer_2, device, clip_skip
+            [plain_text], text_encoder_2, tokenizer_2, device, clip_skip
         )
 
         # Apply weights to each encoder's embeddings

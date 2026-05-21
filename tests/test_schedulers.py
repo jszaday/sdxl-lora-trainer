@@ -1,18 +1,17 @@
 """Tests for noise scheduler selection."""
 
 import pytest
-from diffusers import DDPMScheduler, EulerDiscreteScheduler
+from diffusers import EulerDiscreteScheduler
 
 from lora_trainer.schedulers import build_noise_scheduler
 
 
 def test_build_simple_scheduler():
-    """Test that 'simple' creates a DDPM scheduler."""
+    """Test that 'simple' uses the selected sampler class with linspace spacing."""
     scheduler = build_noise_scheduler("simple", num_inference_steps=50)
-    assert isinstance(scheduler, DDPMScheduler)
-    assert scheduler.config.beta_start == 0.00085
-    assert scheduler.config.beta_end == 0.012
-    assert scheduler.config.prediction_type == "epsilon"
+    assert isinstance(scheduler, EulerDiscreteScheduler)
+    assert scheduler.config.timestep_spacing == "linspace"
+    assert scheduler.config.use_karras_sigmas is False
 
 
 def test_build_normal_scheduler():
@@ -34,18 +33,18 @@ def test_build_karras_scheduler():
 
 
 def test_build_exponential_scheduler():
-    """Test that 'exponential' creates a scheduler with Karras sigmas."""
+    """Test that 'exponential' uses trailing spacing without Karras sigmas."""
     scheduler = build_noise_scheduler("exponential")
-    # Our implementation uses Karras sigmas for exponential fallback
     assert hasattr(scheduler.config, "use_karras_sigmas")
-    assert scheduler.config.use_karras_sigmas is True
+    assert scheduler.config.use_karras_sigmas is False
+    assert scheduler.config.timestep_spacing == "trailing"
 
 
 def test_build_sgm_uniform_scheduler():
-    """Test that 'sgm_uniform' creates a scheduler with linspace spacing."""
+    """Test that 'sgm_uniform' uses leading timestep spacing."""
     scheduler = build_noise_scheduler("sgm_uniform")
     assert hasattr(scheduler.config, "timestep_spacing")
-    assert scheduler.config.timestep_spacing == "linspace"
+    assert scheduler.config.timestep_spacing == "leading"
 
 
 def test_build_dpmpp_2m_sampler():

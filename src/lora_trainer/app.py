@@ -22,7 +22,7 @@ from lora_trainer.trt.backends import (
     TensorRTUnetBackend,
     TorchUnetBackend,
 )
-from lora_trainer.trt.cache import build_engine_cache_key, resolve_engine_artifacts
+from lora_trainer.trt.build import build_unet_engine
 from lora_trainer.trt.config import SDXL_RESOLUTIONS, parse_resolution
 from lora_trainer.trt.inference import sample_frozen_sdxl
 from lora_trainer.utils import set_seed
@@ -130,6 +130,28 @@ def _load_torch_backend(
         merge_lora_layers(unet)
     unet.requires_grad_(False).eval()
     return TorchUnetBackend(unet)
+
+
+# --- pipeline cache management --------------------------------------------------
+
+
+def _pipeline_key(
+    checkpoint: str,
+    precision: str,
+    lora_checkpoint: str | None,
+    lora_rank: int,
+    backend: str,
+    resolution: str,
+) -> tuple:
+    return (checkpoint, precision, lora_checkpoint, lora_rank, backend, resolution)
+
+
+def _evict_pipeline_cache() -> None:
+    """Clear all cached pipeline resources and free VRAM."""
+    _load_pipeline.clear()
+    _load_torch_backend.clear()
+    _load_trt_backend.clear()
+    torch.cuda.empty_cache()
 
 
 # --- app ------------------------------------------------------------------------
@@ -267,6 +289,12 @@ def main() -> None:
     set_seed(seed)
     res = parse_resolution(resolution)
 
+    current_key = _pipeline_key(
+        checkpoint, precision, lora_checkpoint, int(lora_rank), backend, resolution
+    )
+    if st.session_state.get("loaded_pipeline_key") != current_key:
+        _evict_pipeline_cache()
+
     with st.status("Loading pipeline...", expanded=False) as status:
         st.write("VAE + text encoders…")
         vae, te1, te2, tok1, tok2 = _load_pipeline(
@@ -275,17 +303,19 @@ def main() -> None:
 
         st.write("UNet backend…")
         if backend == "trt":
-            key = build_engine_cache_key(
-                checkpoint,
-                res,
-                precision=precision,
-                lora_checkpoint=Path(lora_checkpoint) if lora_checkpoint else None,
-            )
-            engine_path = resolve_engine_artifacts(
-                startup.engine_dir, startup.onnx_dir, key
-            ).engine_path
+            st.write("TensorRT engine…")
             try:
-                unet_backend = _load_trt_backend(str(engine_path))
+                artifacts = build_unet_engine(
+                    checkpoint,
+                    res,
+                    engine_dir=startup.engine_dir,
+                    onnx_dir=startup.onnx_dir,
+                    precision=precision,
+                    device=device,
+                    lora_checkpoint=Path(lora_checkpoint) if lora_checkpoint else None,
+                    lora_rank=int(lora_rank),
+                )
+                unet_backend = _load_trt_backend(str(artifacts.engine_path))
             except TensorRTUnavailableError as exc:
                 st.error(str(exc))
                 st.stop()
@@ -295,6 +325,7 @@ def main() -> None:
             )
 
         status.update(label="Pipeline ready", state="complete")
+    st.session_state["loaded_pipeline_key"] = current_key
 
     dtype = _dtype(precision)
 

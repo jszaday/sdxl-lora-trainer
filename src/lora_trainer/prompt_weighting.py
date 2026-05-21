@@ -220,7 +220,7 @@ def get_token_positions(
         subword tokenization.
     """
     positions = []
-    current_pos = 0
+    current_pos = 1  # position 0 is the BOS token; text tokens start at 1
 
     # Tokenize each segment to get token counts
     for segment in segments:

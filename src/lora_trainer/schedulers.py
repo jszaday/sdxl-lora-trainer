@@ -12,7 +12,7 @@ from diffusers import (
     DDIMScheduler,
     DDPMScheduler,
     DPMSolverMultistepScheduler,
-    DPMSolverSinglestepScheduler,
+    DPMSolverSDEScheduler,
     EulerAncestralDiscreteScheduler,
     EulerDiscreteScheduler,
     HeunDiscreteScheduler,
@@ -64,8 +64,8 @@ def build_noise_scheduler(
         scheduler_config["solver_order"] = 2
         scheduler_config["algorithm_type"] = "sde-dpmsolver++"
     elif sampler_name == "dpmpp_sde":
-        cls = DPMSolverSinglestepScheduler
-        # Singlestep doesn't use algorithm_type in some versions, but let's be safe
+        # Stochastic 2nd-order ODE solver (k-diffusion sample_dpmpp_sde)
+        cls = DPMSolverSDEScheduler
     elif sampler_name == "lms":
         cls = LMSDiscreteScheduler
     elif sampler_name == "ddim":
@@ -77,28 +77,30 @@ def build_noise_scheduler(
     else:
         raise ValueError(f"Unknown sampler '{sampler_name}'")
 
-    # Map scheduler (sigma) names to timestep_spacing/use_karras_sigmas
+    # Map scheduler (sigma) names to timestep_spacing/use_karras_sigmas.
+    # ComfyUI reference: comfy/samplers.py SCHEDULER_HANDLERS.
     name = name.lower()
     if name == "simple":
-        # Usually DDPM style
-        return DDPMScheduler(**scheduler_config)
-
-    if name == "normal":
+        # ComfyUI simple_scheduler: evenly spaced steps from the model's sigma table.
+        # Closest diffusers equivalent: uniform linspace without Karras.
+        scheduler_config["timestep_spacing"] = "linspace"
+        scheduler_config["use_karras_sigmas"] = False
+    elif name == "normal":
         scheduler_config["timestep_spacing"] = "linspace"
         scheduler_config["use_karras_sigmas"] = False
     elif name == "karras":
         scheduler_config["timestep_spacing"] = "trailing"
         scheduler_config["use_karras_sigmas"] = True
     elif name == "exponential":
+        # ComfyUI: get_sigmas_exponential — log-linear from sigma_max to sigma_min.
+        # Diffusers doesn't expose this for all sampler classes; trailing without
+        # Karras is the closest available fallback.
         scheduler_config["timestep_spacing"] = "trailing"
-        # Diffusers doesn't have an explicit 'exponential' flag for all,
-        # but karras sigmas are close.
-        # For true exponential we'd need to manually set sigmas.
-        # We'll use Karras as a fallback for now.
-        scheduler_config["use_karras_sigmas"] = True
+        scheduler_config["use_karras_sigmas"] = False
     elif name == "sgm_uniform":
-        scheduler_config["timestep_spacing"] = "linspace"
-        # SGM uniform is usually linspace without karras
+        # ComfyUI sgm_uniform: normal_scheduler(sgm=True) — N+1 linspace timesteps,
+        # drop the last. Leading spacing is the diffusers approximation.
+        scheduler_config["timestep_spacing"] = "leading"
         scheduler_config["use_karras_sigmas"] = False
     else:
         supported_sched = ["simple", "normal", "karras", "exponential", "sgm_uniform"]

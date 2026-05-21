@@ -9,7 +9,7 @@ import pytest
 from lora_trainer.config import TrainingConfig
 
 
-@pytest.fixture()
+@pytest.fixture
 def temp_data_dir():
     """Create a temporary directory with dummy image files."""
     temp_dir = Path(tempfile.mkdtemp())
@@ -24,7 +24,7 @@ def temp_data_dir():
     shutil.rmtree(temp_dir)
 
 
-@pytest.fixture()
+@pytest.fixture
 def temp_prompts_file():
     """Create a temporary prompts file."""
     temp_file = Path(tempfile.mktemp(suffix=".txt"))

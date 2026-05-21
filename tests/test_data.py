@@ -12,7 +12,7 @@ from lora_trainer.bucketing import BucketConfig
 from lora_trainer.data import ImageFolderWithCaptions, build_dataloader
 
 
-@pytest.fixture()
+@pytest.fixture
 def temp_image_dir():
     """Create a temporary directory with test images and captions."""
     temp_dir = Path(tempfile.mkdtemp())

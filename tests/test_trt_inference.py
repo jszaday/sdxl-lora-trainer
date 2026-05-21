@@ -65,9 +65,7 @@ def test_file_sha256_hashes_local_file(tmp_path):
     path = tmp_path / "model.safetensors"
     path.write_bytes(b"abc")
 
-    assert file_sha256(path) == (
-        "ba7816bf8f01cfea414140de5dae2223" "b00361a396177a9cb410ff61f20015ad"
-    )
+    assert file_sha256(path) == ("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
 
 
 def test_engine_cache_key_changes_with_lora_and_resolution(tmp_path):

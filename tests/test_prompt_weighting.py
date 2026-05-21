@@ -152,7 +152,7 @@ class TestParseWeightedPrompt:
 class TestGetTokenPositions:
     """Tests for token position mapping."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def mock_tokenizer(self):
         """Create a mock tokenizer for testing."""
 

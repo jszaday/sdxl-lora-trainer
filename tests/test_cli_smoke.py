@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 
 
-@pytest.fixture()
+@pytest.fixture
 def temp_training_setup():
     """Create a complete temporary training setup."""
     temp_dir = Path(tempfile.mkdtemp())

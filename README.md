@@ -233,6 +233,24 @@ Use `--backend torch --compile_unet` only as a same-shape baseline before
 profiling TensorRT. Pass `--no_build_engine` to require a cache hit, or
 `--force_build_engine` to re-export ONNX and rebuild the TensorRT plan.
 
+### Streamlit Inference App
+
+An interactive UI for hot-start generation — pipeline loads once, subsequent
+generations skip the model-loading overhead entirely:
+
+```bash
+python -m lora_trainer.app \
+  --checkpoint_dir /path/to/checkpoints \
+  --lora_dir /path/to/loras \
+  --engine_dir engines
+```
+
+Each generation shows a live performance breakdown (encoding / sampling /
+decoding times, steps/sec, peak VRAM). On an RTX 5090 with the TensorRT
+backend, 30-step fp16 sampling at 1216×832 runs in ~1.5 s end-to-end:
+
+![TensorRT performance panel — RTX 5090, 20.58 steps/sec, 1.49 s total](assets/trt-perf.png)
+
 ### Checkpoint Conversion
 
 #### LoRA Conversion

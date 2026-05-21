@@ -124,7 +124,7 @@ _DEFAULTS = {
     "clip_skip": 1,
     "random_seed": True,
     "seed": 42,
-    "backend": "trt",
+    "backend": "torch",
     "precision": "fp16",
     "prompt": "",
     "negative": "",

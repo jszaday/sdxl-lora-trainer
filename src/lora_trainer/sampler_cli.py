@@ -70,8 +70,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--backend",
         choices=["torch", "trt"],
-        default="trt",
-        help="UNet backend. Defaults to TensorRT; use torch for baseline comparisons.",
+        default="torch",
+        help="UNet backend. Defaults to torch (flash attention); use trt for TensorRT.",
     )
     parser.add_argument("--engine_dir", type=Path, default=Path("engines"))
     parser.add_argument("--onnx_dir", type=Path, default=Path("engines/onnx"))

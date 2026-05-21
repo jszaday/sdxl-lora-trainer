@@ -148,7 +148,7 @@ LoCon example:
 Run a single SDXL inference pass at any fixed SDXL-native resolution:
 
 ```bash
-python -m lora_trainer.infer_trt_cli \
+python -m lora_trainer.sampler_cli \
   --checkpoint stabilityai/stable-diffusion-xl-base-1.0 \
   --prompt "a cinematic portrait, detailed skin, soft rim light" \
   --negative "low-res, blurry" \
@@ -164,8 +164,8 @@ Supported resolutions: `1024x1024`, `1152x896`, `1216x832`, `1344x768`, `1536x64
 
 **Key flags**
 - `--lora_checkpoint`: Merge a LoRA before inference.
-- `--backend trt` (default): TensorRT-accelerated UNet. Missing engines are built automatically and cached by checkpoint SHA256, optional LoRA SHA256, resolution, and precision.
-- `--backend torch`: PyTorch UNet with flash attention (PyTorch SDPA) enabled by default. Pass `--no_flash_attention` to disable.
+- `--backend torch` (default): PyTorch UNet with flash attention (PyTorch SDPA) enabled by default. Pass `--no_flash_attention` to disable.
+- `--backend trt`: TensorRT-accelerated UNet. Missing engines are built automatically and cached by checkpoint SHA256, optional LoRA SHA256, resolution, and precision.
 - `--latents`: Starting latents (`.safetensors` or `.pt`) for img2img workflows.
 - `--save_latents`: Write final latents before VAE decode.
 - `--no_build_engine`: Require a cache hit instead of building.

@@ -46,7 +46,7 @@ trt = [
 lora-train = "lora_trainer.cli:main"
 lora-convert = "lora_converter.cli:main"
 lora-build-trt = "lora_trainer.build_trt_cli:main"
-lora-infer-trt = "lora_trainer.infer_trt_cli:main"
+lora-sample = "lora_trainer.sampler_cli:main"
 lora-app = "lora_trainer.app:run"
 
 [tool.setuptools.packages.find]

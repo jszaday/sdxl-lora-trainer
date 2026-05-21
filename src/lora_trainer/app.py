@@ -1,6 +1,7 @@
 """Streamlit inference app — frontloaded SDXL pipeline with hot-start generations."""
 
 import argparse
+import gc
 import json
 import random
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 import streamlit as st
 import torch
 
+from lora_trainer.model import clear_single_file_cache
 from lora_trainer.pipeline import (
     PRECISIONS as _PRECISIONS,
 )
@@ -106,6 +108,8 @@ def _evict_pipeline_cache() -> None:
     _load_pipeline.clear()
     _load_torch_backend.clear()
     _load_trt_backend.clear()
+    clear_single_file_cache()
+    gc.collect()
     torch.cuda.empty_cache()
 
 
@@ -352,6 +356,7 @@ def main() -> None:
     image_np = images[0].cpu().permute(1, 2, 0).numpy()
     image_np = (image_np * 255).round().clip(0, 255).astype("uint8")
     del images
+    gc.collect()
     torch.cuda.empty_cache()
 
     if random_seed:

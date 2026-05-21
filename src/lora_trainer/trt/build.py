@@ -53,6 +53,51 @@ def dtype_from_precision(precision: str) -> torch.dtype:
     return torch.float32
 
 
+def _max_torch_export_opset() -> int:
+    """Return the highest opset the TorchScript ONNX exporter supports."""
+    import importlib
+
+    max_opset = 17
+    for i in range(1, 30):
+        try:
+            importlib.import_module(f"torch.onnx.symbolic_opset{i}")
+            max_opset = i
+        except ModuleNotFoundError:
+            pass
+    return max_opset
+
+
+def _max_trt_opset() -> int:
+    """Return the highest ONNX opset both TRT's parser and the TorchScript exporter accept."""
+    try:
+        import onnx
+        import onnx.helper as oh
+        import tensorrt as trt
+
+        logger = trt.Logger(trt.Logger.ERROR)
+        builder = trt.Builder(logger)
+        flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+        ceiling = min(onnx.defs.onnx_opset_version(), _max_torch_export_opset())
+        for opset in range(ceiling, 0, -1):
+            node = oh.make_node("Relu", inputs=["x"], outputs=["y"])
+            graph = oh.make_graph(
+                [node],
+                "probe",
+                [oh.make_tensor_value_info("x", onnx.TensorProto.FLOAT, [1])],
+                [oh.make_tensor_value_info("y", onnx.TensorProto.FLOAT, [1])],
+            )
+            model = oh.make_model(graph, opset_imports=[oh.make_opsetid("", opset)])
+            model.ir_version = 10
+            network = builder.create_network(flags)
+            parser = trt.OnnxParser(network, logger)
+            supported, _ = parser.supports_model(model.SerializeToString())
+            if supported:
+                return opset
+    except Exception:
+        pass
+    return 17
+
+
 def load_frozen_unet(
     checkpoint: str,
     *,
@@ -84,9 +129,11 @@ def export_unet_onnx(
     *,
     device: str,
     dtype: torch.dtype,
-    opset: int = 17,
+    opset: int | None = None,
 ) -> None:
     """Export a fixed-shape CFG-batched SDXL UNet to ONNX."""
+    if opset is None:
+        opset = _max_trt_opset()
     onnx_path = Path(onnx_path)
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -183,6 +230,8 @@ def build_engine_from_onnx(
         trt.MemoryPoolType.WORKSPACE,
         int(workspace_gb * 1024**3),
     )
+    # Target the exact current GPU; no backward-compat fallback to older SM.
+    config.hardware_compatibility_level = trt.HardwareCompatibilityLevel.NONE
     if precision == "fp16":
         if not builder.platform_has_fast_fp16:
             raise RuntimeError("This GPU does not report fast fp16 support")
@@ -207,11 +256,13 @@ def build_unet_engine(
     device: str = "cuda",
     lora_checkpoint: Path | None = None,
     lora_rank: int = 16,
-    opset: int = 17,
+    opset: int | None = None,
     workspace_gb: float = 8.0,
     force: bool = False,
 ) -> EngineArtifacts:
     """Export ONNX and build the cached fixed-shape UNet engine."""
+    if opset is None:
+        opset = _max_trt_opset()
     dtype = dtype_from_precision(precision)
     key = build_engine_cache_key(
         checkpoint,

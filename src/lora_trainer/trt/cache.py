@@ -22,6 +22,7 @@ class EngineCacheKey:
     resolution: str
     precision: str
     opset: int
+    sm: str  # GPU compute capability, e.g. "sm120"
     effective_batch: int = 2
 
     @property
@@ -59,6 +60,17 @@ def artifact_identity(value: str | Path) -> tuple[str, str]:
     return str(value), f"model-id:{value}"
 
 
+def current_sm() -> str:
+    """Return the SM identifier for the current CUDA device, e.g. 'sm120'."""
+    try:
+        import torch
+
+        p = torch.cuda.get_device_properties(torch.cuda.current_device())
+        return f"sm{p.major}{p.minor}"
+    except Exception:
+        return "smunknown"
+
+
 def build_engine_cache_key(
     checkpoint: str,
     resolution: ResolutionSpec,
@@ -83,6 +95,7 @@ def build_engine_cache_key(
         resolution=resolution.name,
         precision=precision,
         opset=opset,
+        sm=current_sm(),
     )
 
 

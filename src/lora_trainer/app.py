@@ -1,13 +1,13 @@
 """Streamlit inference app — frontloaded SDXL pipeline with hot-start generations."""
 
 import argparse
+import json
 import random
 import sys
 from pathlib import Path
 
 import streamlit as st
 import torch
-from streamlit_local_storage import LocalStorage
 
 from lora_trainer.model import (
     load_lora_weights,
@@ -135,33 +135,43 @@ def _load_torch_backend(
 # --- app ------------------------------------------------------------------------
 
 
+_SETTINGS_PATH = Path.home() / ".config" / "lora-trainer" / "settings.json"
+
+_DEFAULTS = {
+    "resolution": "1216x832",
+    "sampler": "euler",
+    "scheduler": "karras",
+    "cfg": 5.5,
+    "steps": 30,
+    "random_seed": True,
+    "seed": 42,
+    "backend": "trt",
+    "precision": "fp16",
+    "prompt": "",
+    "negative": "",
+}
+
+
+def _load_settings() -> dict:
+    try:
+        return json.loads(_SETTINGS_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _save_settings(state: dict) -> None:
+    _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    keys = (*_DEFAULTS, "checkpoint", "lora", "lora_rank")
+    _SETTINGS_PATH.write_text(json.dumps({k: state[k] for k in keys if k in state}))
+
+
 def main() -> None:
     st.set_page_config(page_title="SDXL Inference", layout="wide")
     startup = _parse_startup_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    _ls = LocalStorage()
-
     if "pending_seed" in st.session_state:
         st.session_state["seed"] = st.session_state.pop("pending_seed")
-
-    if "settings_loaded" not in st.session_state:
-        stored = _ls.getItem("sdxl_settings") or {}
-        _defaults = {
-            "resolution": "1216x832",
-            "sampler": "euler",
-            "scheduler": "karras",
-            "cfg": 5.5,
-            "steps": 30,
-            "random_seed": True,
-            "seed": 42,
-            "backend": "trt",
-            "precision": "fp16",
-        }
-        for key, default in _defaults.items():
-            if key not in st.session_state:
-                st.session_state[key] = stored.get(key, default)
-        st.session_state["settings_loaded"] = True
 
     checkpoints = _scan_safetensors(startup.checkpoint_dir)
     if not checkpoints:
@@ -171,11 +181,23 @@ def main() -> None:
     loras = [_NO_LORA] + (
         [str(p) for p in _scan_safetensors(startup.lora_dir)] if startup.lora_dir else []
     )
-
     checkpoint_paths = [str(p) for p in checkpoints]
 
-    # Validate any stored selectbox values are still in the current option lists;
-    # fall back to the first available option if the stored path has moved.
+    if "settings_loaded" not in st.session_state:
+        stored = _load_settings()
+        for key, default in _DEFAULTS.items():
+            st.session_state[key] = stored.get(key, default)
+        # Restore model selectors with fallback to first available.
+        st.session_state["checkpoint"] = (
+            stored["checkpoint"]
+            if stored.get("checkpoint") in checkpoint_paths
+            else checkpoint_paths[0]
+        )
+        st.session_state["lora"] = stored["lora"] if stored.get("lora") in loras else _NO_LORA
+        st.session_state["lora_rank"] = stored.get("lora_rank", 16)
+        st.session_state["settings_loaded"] = True
+
+    # Validate option-list keys in case available files changed since last save.
     def _ensure_valid(key: str, options: list) -> None:
         if st.session_state.get(key) not in options:
             st.session_state[key] = options[0]
@@ -203,11 +225,7 @@ def main() -> None:
         )
         lora_checkpoint = None if lora_raw == _NO_LORA else lora_raw
         lora_rank = st.number_input(
-            "LoRA rank",
-            min_value=1,
-            key="lora_rank",
-            value=st.session_state.get("lora_rank", 16),
-            disabled=lora_checkpoint is None,
+            "LoRA rank", min_value=1, key="lora_rank", disabled=lora_checkpoint is None
         )
 
         st.header("Sampling")
@@ -230,32 +248,12 @@ def main() -> None:
         backend = st.radio("Backend", ["trt", "torch"], key="backend")
         precision = st.radio("Precision", _PRECISIONS, key="precision")
 
-    # Persist sidebar state to localStorage on every render.
-    _ls.setItem(
-        "sdxl_settings",
-        {
-            k: st.session_state.get(k)
-            for k in (
-                "resolution",
-                "sampler",
-                "scheduler",
-                "cfg",
-                "steps",
-                "random_seed",
-                "seed",
-                "backend",
-                "precision",
-                "checkpoint",
-                "lora",
-                "lora_rank",
-            )
-        },
-    )
+    _save_settings(st.session_state)
 
     # --- main area --------------------------------------------------------------
     st.title("SDXL Inference")
-    prompt = st.text_area("Prompt", value="", height=80)
-    negative = st.text_area("Negative prompt", value="", height=60)
+    prompt = st.text_area("Prompt", height=80, key="prompt")
+    negative = st.text_area("Negative prompt", height=60, key="negative")
     generate = st.button("Generate", type="primary", width="stretch")
 
     if not generate:

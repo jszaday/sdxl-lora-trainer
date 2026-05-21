@@ -35,7 +35,6 @@ optim = [
 ]
 ui = [
     "streamlit>=1.35.0",
-    "streamlit-local-storage>=0.0.25",
 ]
 trt = [
     "tensorrt>=10.13.0",

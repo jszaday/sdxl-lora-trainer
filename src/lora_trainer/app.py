@@ -10,42 +10,28 @@ from pathlib import Path
 import streamlit as st
 import torch
 
-from lora_trainer.model import (
-    load_lora_weights,
-    load_sdxl_unet,
-    load_text_encoders,
-    load_vae,
-    merge_lora_layers,
+from lora_trainer.pipeline import (
+    PRECISIONS as _PRECISIONS,
+)
+from lora_trainer.pipeline import (
+    SAMPLERS as _SAMPLERS,
+)
+from lora_trainer.pipeline import (
+    SCHEDULERS as _SCHEDULERS,
+)
+from lora_trainer.pipeline import (
+    dtype_from_precision,
+    load_inference_models,
+    load_torch_unet_backend,
+    prepare_trt_engine,
 )
 from lora_trainer.sampling import decode_latents, encode_prompts_for_sampling
-from lora_trainer.trt.backends import (
-    TensorRTUnavailableError,
-    TensorRTUnetBackend,
-    TorchUnetBackend,
-)
-from lora_trainer.trt.build import build_unet_engine
+from lora_trainer.trt.backends import TensorRTUnavailableError, TensorRTUnetBackend
 from lora_trainer.trt.config import SDXL_RESOLUTIONS, parse_resolution
 from lora_trainer.trt.inference import sample_frozen_sdxl
 from lora_trainer.utils import set_seed
 
-_SAMPLERS = [
-    "euler",
-    "euler_ancestral",
-    "heun",
-    "dpmpp_2m",
-    "dpmpp_2m_sde",
-    "dpmpp_sde",
-    "lms",
-    "pndm",
-    "ddim",
-]
-_SCHEDULERS = ["karras", "simple", "normal", "exponential", "sgm_uniform"]
-_PRECISIONS = ["fp16", "bf16", "fp32"]
 _NO_LORA = "— None —"
-
-
-def _dtype(precision: str) -> torch.dtype:
-    return {"fp16": torch.float16, "bf16": torch.bfloat16}.get(precision, torch.float32)
 
 
 def _scan_safetensors(directory: Path) -> list[Path]:
@@ -60,51 +46,26 @@ def _parse_startup_args() -> argparse.Namespace:
         required=True,
         help="Directory to scan for SDXL .safetensors checkpoints.",
     )
-    parser.add_argument(
-        "--lora_dir",
-        type=Path,
-        default=None,
-        help="Directory to scan for LoRA .safetensors checkpoints.",
-    )
-    parser.add_argument(
-        "--engine_dir",
-        type=Path,
-        default=Path("engines"),
-        help="TensorRT engine directory (fixed for the session).",
-    )
+    parser.add_argument("--lora_dir", type=Path, default=None)
+    parser.add_argument("--engine_dir", type=Path, default=Path("engines"))
     parser.add_argument("--onnx_dir", type=Path, default=Path("engines/onnx"))
     args, _ = parser.parse_known_args(sys.argv[1:])
     return args
 
 
 # --- cached pipeline components -------------------------------------------------
-# Each function is keyed on its arguments; changing checkpoint or LoRA loads a
-# fresh instance while the old one stays warm in the Streamlit resource cache.
 
 
 @st.cache_resource(show_spinner=False)
 def _load_pipeline(checkpoint: str, precision: str, lora_checkpoint: str | None, lora_rank: int):
-    """Load VAE + text encoders in one shot to avoid loading the checkpoint twice."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = _dtype(precision)
-    rank = lora_rank if lora_checkpoint else None
-    vae = load_vae(checkpoint, device=device, dtype=dtype)
-    vae.to(torch.float32)
-    te1, te2, tok1, tok2, _ = load_text_encoders(
+    return load_inference_models(
         checkpoint,
         device=device,
-        dtype=dtype,
-        lora_rank=rank,
-        adapter="lora",
+        dtype=dtype_from_precision(precision),
+        lora_checkpoint=lora_checkpoint,
+        lora_rank=lora_rank,
     )
-    if lora_checkpoint:
-        load_lora_weights(lora_checkpoint, text_encoder_1=te1, text_encoder_2=te2)
-        merge_lora_layers(te1)
-        merge_lora_layers(te2)
-    vae.requires_grad_(False).eval()
-    te1.requires_grad_(False).eval()
-    te2.requires_grad_(False).eval()
-    return vae, te1, te2, tok1, tok2
 
 
 @st.cache_resource(show_spinner=False)
@@ -117,20 +78,14 @@ def _load_torch_backend(
     checkpoint: str, precision: str, lora_checkpoint: str | None, lora_rank: int
 ):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = _dtype(precision)
-    rank = lora_rank if lora_checkpoint else None
-    unet, _ = load_sdxl_unet(
+    return load_torch_unet_backend(
         checkpoint,
         device=device,
-        dtype=dtype,
-        lora_rank=rank,
-        adapter="lora",
+        dtype=dtype_from_precision(precision),
+        lora_checkpoint=lora_checkpoint,
+        lora_rank=lora_rank,
+        flash_attention=True,
     )
-    if lora_checkpoint:
-        load_lora_weights(lora_checkpoint, unet=unet)
-        merge_lora_layers(unet)
-    unet.requires_grad_(False).eval()
-    return TorchUnetBackend(unet)
 
 
 # --- pipeline cache management --------------------------------------------------
@@ -148,7 +103,6 @@ def _pipeline_key(
 
 
 def _evict_pipeline_cache() -> None:
-    """Clear all cached pipeline resources and free VRAM."""
     _load_pipeline.clear()
     _load_torch_backend.clear()
     _load_trt_backend.clear()
@@ -212,7 +166,6 @@ def main() -> None:
         stored = _load_settings()
         for key, default in _DEFAULTS.items():
             st.session_state[key] = stored.get(key, default)
-        # Restore model selectors with fallback to first available.
         st.session_state["checkpoint"] = (
             stored["checkpoint"]
             if stored.get("checkpoint") in checkpoint_paths
@@ -222,7 +175,6 @@ def main() -> None:
         st.session_state["lora_rank"] = stored.get("lora_rank", 16)
         st.session_state["settings_loaded"] = True
 
-    # Validate option-list keys in case available files changed since last save.
     def _ensure_valid(key: str, options: list) -> None:
         if st.session_state.get(key) not in options:
             st.session_state[key] = options[0]
@@ -310,7 +262,7 @@ def main() -> None:
         if backend == "trt":
             st.write("TensorRT engine…")
             try:
-                artifacts = build_unet_engine(
+                engine_path = prepare_trt_engine(
                     checkpoint,
                     res,
                     engine_dir=startup.engine_dir,
@@ -320,7 +272,7 @@ def main() -> None:
                     lora_checkpoint=Path(lora_checkpoint) if lora_checkpoint else None,
                     lora_rank=int(lora_rank),
                 )
-                unet_backend = _load_trt_backend(str(artifacts.engine_path))
+                unet_backend = _load_trt_backend(str(engine_path))
             except TensorRTUnavailableError as exc:
                 st.error(str(exc))
                 st.stop()
@@ -332,7 +284,7 @@ def main() -> None:
         status.update(label="Pipeline ready", state="complete")
     st.session_state["loaded_pipeline_key"] = current_key
 
-    dtype = _dtype(precision)
+    dtype = dtype_from_precision(precision)
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()

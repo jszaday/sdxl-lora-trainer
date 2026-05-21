@@ -7,38 +7,31 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-from .model import (
-    load_lora_weights,
-    load_sdxl_unet,
-    load_text_encoders,
-    load_vae,
-    merge_lora_layers,
+from .pipeline import (
+    SAMPLERS as _SAMPLERS,
+)
+from .pipeline import (
+    SCHEDULERS as _SCHEDULERS,
+)
+from .pipeline import (
+    build_trt_backend,
+    dtype_from_precision,
+    load_inference_models,
+    load_torch_unet_backend,
 )
 from .sampling import decode_latents, encode_prompts_for_sampling
-from .trt.backends import TensorRTUnavailableError, TensorRTUnetBackend, TorchUnetBackend
-from .trt.build import build_unet_engine
-from .trt.cache import build_engine_cache_key, resolve_engine_artifacts
+from .trt.backends import TensorRTUnavailableError
 from .trt.config import SDXL_RESOLUTIONS, infer_resolution_from_latents, parse_resolution
 from .trt.inference import sample_frozen_sdxl
 from .trt.latents import load_latents, save_latents
 from .utils import set_seed
 
 
-def _dtype_from_precision(precision: str) -> torch.dtype:
-    if precision == "fp16":
-        return torch.float16
-    if precision == "bf16":
-        return torch.bfloat16
-    return torch.float32
-
-
 def _save_images(images: torch.Tensor, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     for idx, image in enumerate(images):
         suffix = output.suffix or ".png"
-        path = output
-        if images.shape[0] > 1:
-            path = output.with_name(f"{output.stem}_{idx}{suffix}")
+        path = output if images.shape[0] == 1 else output.with_name(f"{output.stem}_{idx}{suffix}")
         image_np = image.to(torch.float32).cpu().permute(1, 2, 0).numpy()
         image_np = (image_np * 255).round().clip(0, 255).astype("uint8")
         Image.fromarray(image_np).save(path)
@@ -49,25 +42,15 @@ def parse_args() -> argparse.Namespace:
         description="Frozen SDXL inference with fixed TensorRT-ready resolutions",
     )
     parser.add_argument(
-        "--checkpoint",
-        required=True,
-        help="Base SDXL checkpoint path or HuggingFace model ID.",
+        "--checkpoint", required=True, help="Base SDXL checkpoint or HuggingFace model ID."
     )
-    parser.add_argument(
-        "--prompt",
-        required=True,
-        help="Positive prompt to render.",
-    )
-    parser.add_argument(
-        "--negative",
-        default="",
-        help="Negative prompt to steer away from unwanted content.",
-    )
+    parser.add_argument("--prompt", required=True, help="Positive prompt.")
+    parser.add_argument("--negative", default="", help="Negative prompt.")
     parser.add_argument(
         "--output",
         type=Path,
         default=Path("sample.png"),
-        help="Output image path. Batched outputs append _N before the suffix.",
+        help="Output image path. Batched outputs append _N before suffix.",
     )
     parser.add_argument(
         "--resolution",
@@ -76,40 +59,22 @@ def parse_args() -> argparse.Namespace:
         help="Fixed SDXL-native output resolution.",
     )
     parser.add_argument(
-        "--latents",
-        type=Path,
-        default=None,
-        help="Optional starting latents as .safetensors or torch checkpoint.",
+        "--latents", type=Path, default=None, help="Starting latents (.safetensors or .pt)."
     )
     parser.add_argument(
-        "--save_latents",
-        type=Path,
-        default=None,
-        help="Optional path to save final latents before VAE decode.",
+        "--save_latents", type=Path, default=None, help="Path to save final latents."
     )
     parser.add_argument(
-        "--no_decode",
-        action="store_true",
-        help="Skip VAE decoding and only save latents when --save_latents is set.",
+        "--no_decode", action="store_true", help="Skip VAE decode; only save latents."
     )
     parser.add_argument(
         "--backend",
         choices=["torch", "trt"],
         default="trt",
-        help="UNet backend. Defaults to TensorRT; use torch only for baseline comparisons.",
+        help="UNet backend. Defaults to TensorRT; use torch for baseline comparisons.",
     )
-    parser.add_argument(
-        "--engine_dir",
-        type=Path,
-        default=Path("engines"),
-        help="Directory containing TensorRT plan files for --backend trt.",
-    )
-    parser.add_argument(
-        "--onnx_dir",
-        type=Path,
-        default=Path("engines/onnx"),
-        help="Directory for intermediate ONNX exports when auto-building TensorRT engines.",
-    )
+    parser.add_argument("--engine_dir", type=Path, default=Path("engines"))
+    parser.add_argument("--onnx_dir", type=Path, default=Path("engines/onnx"))
     parser.add_argument(
         "--no_build_engine",
         action="store_true",
@@ -118,105 +83,52 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force_build_engine",
         action="store_true",
-        help="Re-export ONNX and rebuild the TensorRT engine before inference.",
+        help="Re-export ONNX and rebuild the TRT engine before inference.",
     )
     parser.add_argument(
-        "--workspace_gb",
-        type=float,
-        default=12.0,
-        help="TensorRT builder workspace limit in GiB for auto-builds.",
+        "--workspace_gb", type=float, default=12.0, help="TensorRT builder workspace limit in GiB."
     )
     parser.add_argument(
         "--compile_unet",
         action="store_true",
-        help="Apply torch.compile to the UNet backend for fixed-shape inference.",
+        help="Apply torch.compile to the UNet for fixed-shape inference.",
     )
     parser.add_argument(
-        "--no_progress",
-        action="store_true",
-        help="Disable tqdm progress output, useful when profiling.",
+        "--no_flash_attention",
+        dest="flash_attention",
+        action="store_false",
+        default=True,
+        help="Disable flash attention for the torch backend.",
     )
+    parser.add_argument("--no_progress", action="store_true", help="Disable tqdm progress.")
     parser.add_argument(
-        "--scheduler",
-        choices=["simple", "normal", "karras", "exponential", "sgm_uniform"],
-        default="karras",
-        help="Noise schedule used by the denoise loop.",
+        "--scheduler", choices=_SCHEDULERS, default="karras", help="Noise schedule."
     )
-    parser.add_argument(
-        "--sampler",
-        choices=[
-            "euler",
-            "euler_ancestral",
-            "heun",
-            "dpmpp_2m",
-            "dpmpp_2m_sde",
-            "dpmpp_sde",
-            "lms",
-            "pndm",
-            "ddim",
-        ],
-        default="euler",
-        help="Sampler algorithm for scheduler.step updates.",
-    )
-    parser.add_argument(
-        "--cfg",
-        type=float,
-        default=5.5,
-        help="Classifier-free guidance scale.",
-    )
-    parser.add_argument(
-        "--sampler_steps",
-        type=int,
-        default=30,
-        help="Number of denoising steps.",
-    )
+    parser.add_argument("--sampler", choices=_SAMPLERS, default="euler", help="Sampler algorithm.")
+    parser.add_argument("--cfg", type=float, default=5.5, help="Classifier-free guidance scale.")
+    parser.add_argument("--sampler_steps", type=int, default=30, help="Number of denoising steps.")
     parser.add_argument(
         "--denoise",
         type=float,
         default=1.0,
-        help="Fraction of denoise schedule to run when starting from supplied latents.",
+        help="Fraction of denoise schedule to run (img2img from --latents).",
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--device", default=None, help="Device. Defaults to cuda when available.")
+    parser.add_argument("--precision", choices=["fp16", "bf16", "fp32"], default="fp16")
+    parser.add_argument(
+        "--lora_checkpoint", type=Path, default=None, help="LoRA checkpoint to merge."
     )
     parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for generated initial latents.",
+        "--lora_rank", type=int, default=16, help="LoRA rank for --lora_checkpoint."
     )
-    parser.add_argument(
-        "--device",
-        default=None,
-        help="Device to use. Defaults to cuda when available.",
-    )
-    parser.add_argument(
-        "--precision",
-        choices=["fp16", "bf16", "fp32"],
-        default="fp16",
-        help="Inference precision for model weights and latents.",
-    )
-    parser.add_argument(
-        "--lora_checkpoint",
-        type=Path,
-        default=None,
-        help="Optional LoRA checkpoint to merge into the frozen inference model.",
-    )
-    parser.add_argument(
-        "--lora_rank",
-        type=int,
-        default=16,
-        help="LoRA rank to instantiate before loading --lora_checkpoint.",
-    )
-    parser.add_argument(
-        "--clip_skip",
-        type=int,
-        default=1,
-        help="CLIP skip for text_encoder_1 hidden states.",
-    )
+    parser.add_argument("--clip_skip", type=int, default=1, help="CLIP skip for text_encoder_1.")
     parser.add_argument(
         "--disable_prompt_weighting",
         dest="enable_prompt_weighting",
         action="store_false",
         default=True,
-        help="Treat parentheses in prompts literally instead of applying prompt weights.",
+        help="Treat parentheses literally instead of applying prompt weights.",
     )
     return parser.parse_args()
 
@@ -224,7 +136,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = _dtype_from_precision(args.precision)
+    dtype = dtype_from_precision(args.precision)
     set_seed(args.seed)
 
     initial_latents = None
@@ -245,103 +157,61 @@ def main() -> None:
         f"({resolution.latent_height}x{resolution.latent_width} latent)"
     )
 
-    if args.backend == "trt" and not args.no_build_engine:
-        artifacts = build_unet_engine(
+    lora_ckpt = args.lora_checkpoint
+    print(f"Loading SDXL components from: {args.checkpoint}")
+    vae, te1, te2, tok1, tok2 = load_inference_models(
+        args.checkpoint,
+        device=device,
+        dtype=dtype,
+        lora_checkpoint=lora_ckpt,
+        lora_rank=args.lora_rank,
+    )
+
+    if args.backend == "trt":
+        unet_backend = build_trt_backend(
             args.checkpoint,
             resolution,
             engine_dir=args.engine_dir,
             onnx_dir=args.onnx_dir,
             precision=args.precision,
             device=device,
-            lora_checkpoint=args.lora_checkpoint,
+            lora_checkpoint=lora_ckpt,
             lora_rank=args.lora_rank,
             workspace_gb=args.workspace_gb,
             force=args.force_build_engine,
+            no_build=args.no_build_engine,
         )
     else:
-        artifacts = None
-
-    lora_rank = args.lora_rank if args.lora_checkpoint is not None else None
-    print(f"Loading SDXL components from: {args.checkpoint}")
-    unet = None
-    if args.backend == "torch" or args.lora_checkpoint is not None:
-        unet, _ = load_sdxl_unet(
+        unet_backend = load_torch_unet_backend(
             args.checkpoint,
             device=device,
             dtype=dtype,
-            lora_rank=lora_rank,
-            adapter="lora",
+            lora_checkpoint=lora_ckpt,
+            lora_rank=args.lora_rank,
+            compile_unet=args.compile_unet,
+            flash_attention=args.flash_attention,
         )
-    vae = load_vae(args.checkpoint, device=device, dtype=dtype)
-    text_encoder_1, text_encoder_2, tokenizer_1, tokenizer_2, _ = load_text_encoders(
-        args.checkpoint,
-        device=device,
-        dtype=dtype,
-        lora_rank=lora_rank,
-        adapter="lora",
-    )
-
-    if args.lora_checkpoint is not None:
-        print(f"Loading and merging LoRA: {args.lora_checkpoint}")
-        if unet is None:
-            raise ValueError("Internal error: LoRA loading requires a Torch UNet")
-        load_lora_weights(
-            args.lora_checkpoint,
-            unet=unet,
-            text_encoder_1=text_encoder_1,
-            text_encoder_2=text_encoder_2,
-        )
-        merge_lora_layers(unet)
-        merge_lora_layers(text_encoder_1)
-        merge_lora_layers(text_encoder_2)
-
-    if unet is not None:
-        unet.requires_grad_(False)
-        unet.eval()
-    vae.requires_grad_(False)
-    text_encoder_1.requires_grad_(False)
-    text_encoder_2.requires_grad_(False)
-    vae.eval()
-    text_encoder_1.eval()
-    text_encoder_2.eval()
 
     prompt_embeds, pooled_prompt_embeds = encode_prompts_for_sampling(
         [args.prompt],
-        text_encoder_1,
-        text_encoder_2,
-        tokenizer_1,
-        tokenizer_2,
+        te1,
+        te2,
+        tok1,
+        tok2,
         device,
         clip_skip=args.clip_skip,
         enable_prompt_weighting=args.enable_prompt_weighting,
     )
     negative_prompt_embeds, pooled_negative_prompt_embeds = encode_prompts_for_sampling(
         [args.negative],
-        text_encoder_1,
-        text_encoder_2,
-        tokenizer_1,
-        tokenizer_2,
+        te1,
+        te2,
+        tok1,
+        tok2,
         device,
         clip_skip=args.clip_skip,
         enable_prompt_weighting=args.enable_prompt_weighting,
     )
-
-    if args.backend == "trt":
-        if artifacts is not None:
-            engine_path = artifacts.engine_path
-        else:
-            key = build_engine_cache_key(
-                args.checkpoint,
-                resolution,
-                precision=args.precision,
-                lora_checkpoint=args.lora_checkpoint,
-            )
-            engine_path = resolve_engine_artifacts(args.engine_dir, args.onnx_dir, key).engine_path
-        unet_backend = TensorRTUnetBackend(engine_path)
-    else:
-        if unet is None:
-            raise ValueError("Torch backend requires a loaded UNet")
-        unet_backend = TorchUnetBackend(unet, compile_unet=args.compile_unet)
 
     latents = sample_frozen_sdxl(
         unet_backend,
@@ -367,7 +237,6 @@ def main() -> None:
         print(f"Saved latents: {args.save_latents}")
 
     if not args.no_decode:
-        vae = vae.to(dtype=torch.float32)
         images = decode_latents(vae, latents.to(torch.float32))
         _save_images(images, args.output)
         print(f"Saved image: {args.output}")

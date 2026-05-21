@@ -696,7 +696,7 @@ def _build_lora_key_map(model: nn.Module, prefix: str) -> dict[str, str]:
 
 def load_lora_weights(
     lora_path: Path,
-    unet: nn.Module,
+    unet: nn.Module | None = None,
     text_encoder_1: nn.Module | None = None,
     text_encoder_2: nn.Module | None = None,
 ) -> None:
@@ -712,7 +712,7 @@ def load_lora_weights(
         return
 
     # Build key mappings for each model
-    unet_key_map = _build_lora_key_map(unet, "lora_unet")
+    unet_key_map = _build_lora_key_map(unet, "lora_unet") if unet is not None else {}
     te1_key_map = _build_lora_key_map(text_encoder_1, "lora_te1") if text_encoder_1 else {}
     te2_key_map = _build_lora_key_map(text_encoder_2, "lora_te2") if text_encoder_2 else {}
 

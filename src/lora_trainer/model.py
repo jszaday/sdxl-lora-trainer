@@ -608,20 +608,61 @@ def infer_lora_hparams(model: nn.Module) -> tuple[int | None, float | None]:
     return None, None
 
 
+def _raw_lora_key_to_comfyui(key: str, prefix: str) -> str:
+    """Convert a raw diffusers-format LoRA key to ComfyUI prefixed format."""
+    if key.endswith(".lora_down.weight"):
+        module = key[: -len(".lora_down.weight")].replace(".", "_")
+        return f"{prefix}_{module}.lora_down.weight"
+    if key.endswith(".lora_up.weight"):
+        module = key[: -len(".lora_up.weight")].replace(".", "_")
+        return f"{prefix}_{module}.lora_up.weight"
+    if key.endswith(".alpha"):
+        module = key[: -len(".alpha")].replace(".", "_")
+        return f"{prefix}_{module}.alpha"
+    return key
+
+
 def _load_lora_state(lora_path: Path) -> dict[str, torch.Tensor]:
-    """Load LoRA tensors from a .pt or .safetensors file."""
+    """Load LoRA tensors from a .pt or .safetensors file.
+
+    For training checkpoints (.pt with model_state_dict / text_encoder_*_state_dict
+    sub-dicts) the three per-model states are merged into one dict: UNet keys keep
+    their raw diffusers paths, TE keys are converted to ComfyUI-prefixed format
+    (lora_te1_* / lora_te2_*) so they can be distinguished during routing.
+    """
     if lora_path.suffix.lower() == ".safetensors":
         return dict(load_safetensors(str(lora_path)))
 
     state = torch.load(lora_path, map_location="cpu")
-    if isinstance(state, dict):
-        if "model_state_dict" in state:
-            state = state["model_state_dict"]
-        elif "state_dict" in state:
-            state = state["state_dict"]
     if not isinstance(state, dict):
         raise ValueError(f"Unsupported LoRA checkpoint format at {lora_path}")
+
+    # Training checkpoint with separate per-model sub-dicts
+    if "model_state_dict" in state:
+        combined: dict[str, torch.Tensor] = {}
+        for k, v in state["model_state_dict"].items():
+            if "lora_" in k:
+                combined[k] = v
+        for k, v in state.get("text_encoder_1_state_dict", {}).items():
+            if "lora_" in k:
+                combined[_raw_lora_key_to_comfyui(k, "lora_te1")] = v
+        for k, v in state.get("text_encoder_2_state_dict", {}).items():
+            if "lora_" in k:
+                combined[_raw_lora_key_to_comfyui(k, "lora_te2")] = v
+        return combined
+
+    if "state_dict" in state:
+        state = state["state_dict"]
     return {k: v for k, v in state.items() if "lora_" in k}
+
+
+def detect_lora_rank(lora_path: Path) -> int | None:
+    """Return the LoRA rank encoded in a checkpoint, or None if undetectable."""
+    state = _load_lora_state(Path(lora_path))
+    for k, v in state.items():
+        if "lora_down.weight" in k and v.ndim >= 2:
+            return int(v.shape[0])
+    return None
 
 
 def _build_lora_key_map(model: nn.Module, prefix: str) -> dict[str, str]:
@@ -790,15 +831,28 @@ def load_lora_weights(
     applied_te2 = _load_component(text_encoder_2, groups["te2"], alphas["te2"])
 
     applied_total = applied_unet + applied_te1 + applied_te2
-    dropped_count = len(state) - len(loaded_keys)
+    # Keys that target a component not passed to this call are expected to go
+    # unmatched — don't emit a warning for them.  TE keys are identified by
+    # their ComfyUI prefix (set by _load_lora_state for .pt training format and
+    # present natively in safetensors exports).
+    truly_dropped = 0
+    for k in state:
+        if k in loaded_keys:
+            continue
+        is_te_key = k.startswith(("lora_te1_", "lora_te2_"))
+        if is_te_key and text_encoder_1 is None and text_encoder_2 is None:
+            continue  # TE keys when no TE was provided — expected
+        if not is_te_key and unet is None:
+            continue  # UNet/unknown keys when no UNet was provided — expected
+        truly_dropped += 1
 
     print(
         f"Applied {applied_total} LoRA tensors "
         f"(UNet {applied_unet}, TE1 {applied_te1}, TE2 {applied_te2})"
     )
 
-    if dropped_count > 0:
-        print(f"Warning: dropped {dropped_count} LoRA tensors (no matching modules)")
+    if truly_dropped > 0:
+        print(f"Warning: dropped {truly_dropped} LoRA tensors (no matching modules)")
 
 
 def extract_lora_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:

@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 
 from .model import (
+    detect_lora_rank,
     load_lora_weights,
     load_sdxl_unet,
     load_text_encoders,
@@ -60,7 +61,10 @@ def load_inference_models(
 
     Returns (vae, te1, te2, tok1, tok2). VAE is cast to float32 for decode stability.
     """
-    rank = lora_rank if lora_checkpoint else None
+    rank = None
+    if lora_checkpoint:
+        detected = detect_lora_rank(Path(lora_checkpoint))
+        rank = detected if detected is not None else lora_rank
     vae = load_vae(checkpoint, device=device, dtype=dtype)
     vae.to(torch.float32)
     te1, te2, tok1, tok2, _ = load_text_encoders(
@@ -94,7 +98,10 @@ def load_torch_unet_backend(
     flash_attention: bool = True,
 ) -> TorchUnetBackend:
     """Load UNet, merge LoRA if provided, enable flash attention, return TorchUnetBackend."""
-    rank = lora_rank if lora_checkpoint else None
+    rank = None
+    if lora_checkpoint:
+        detected = detect_lora_rank(Path(lora_checkpoint))
+        rank = detected if detected is not None else lora_rank
     unet, _ = load_sdxl_unet(
         checkpoint,
         device=device,

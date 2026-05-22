@@ -7,6 +7,7 @@ import torch.nn as nn
 
 from lora_trainer.model import (
     clear_single_file_cache,
+    detect_lora_rank,
     load_lora_weights,
     load_sdxl_unet,
     merge_lora_layers,
@@ -107,7 +108,10 @@ def load_frozen_unet(
     lora_rank: int = 16,
 ) -> nn.Module:
     """Load a plain or LoRA-merged SDXL UNet for export."""
-    rank = lora_rank if lora_checkpoint is not None else None
+    rank = None
+    if lora_checkpoint is not None:
+        detected = detect_lora_rank(lora_checkpoint)
+        rank = detected if detected is not None else lora_rank
     unet, _ = load_sdxl_unet(
         checkpoint,
         device=device,

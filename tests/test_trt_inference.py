@@ -19,6 +19,11 @@ from lora_trainer.trt.config import (
     parse_resolution,
     validate_latents_shape,
 )
+from lora_trainer.trt.inference import (
+    _match_conditioning_sequence_lengths,
+    make_initial_latents,
+    sample_frozen_sdxl,
+)
 from lora_trainer.trt.latents import load_latents, save_latents
 
 
@@ -54,6 +59,162 @@ def test_latents_round_trip_safetensors(tmp_path):
 
     loaded = load_latents(path, device="cpu", dtype=torch.float32)
     assert torch.allclose(loaded, latents)
+
+
+def test_initial_latents_match_comfy_cpu_seed_path():
+    spec = parse_resolution("1024x1024")
+    latents = make_initial_latents(
+        spec,
+        batch_size=1,
+        device="cpu",
+        dtype=torch.float16,
+        seed=123,
+    )
+    expected = torch.randn(
+        (1, 4, 128, 128),
+        generator=torch.Generator(device="cpu").manual_seed(123),
+        device="cpu",
+        dtype=torch.float32,
+    ).to(dtype=torch.float16)
+
+    assert torch.equal(latents, expected)
+
+
+def test_partial_denoise_initial_latents_use_sliced_start_sigma(monkeypatch):
+    spec = parse_resolution("1024x1024")
+    captured: dict[str, torch.Tensor] = {}
+
+    def fake_initial_latents(*args, **kwargs):
+        return torch.ones(1, 4, 128, 128)
+
+    class CaptureBackend:
+        def __call__(self, sample, timestep, encoder_hidden_states, *, added_cond_kwargs):
+            if "first_sample" not in captured:
+                captured["first_sample"] = sample.detach().clone()
+            return torch.zeros_like(sample)
+
+    monkeypatch.setattr("lora_trainer.trt.inference.make_initial_latents", fake_initial_latents)
+
+    prompt_embeds = torch.zeros(1, 77, 2048)
+    pooled_embeds = torch.zeros(1, 1280)
+    sample_frozen_sdxl(
+        CaptureBackend(),
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=prompt_embeds,
+        pooled_prompt_embeds=pooled_embeds,
+        pooled_negative_prompt_embeds=pooled_embeds,
+        resolution=spec,
+        sampler="euler",
+        scheduler_name="normal",
+        num_inference_steps=5,
+        guidance_scale=1.0,
+        device="cpu",
+        dtype=torch.float32,
+        seed=123,
+        denoise=0.5,
+        progress=False,
+    )
+
+    first_sample = captured["first_sample"]
+    # The first UNet input is scheduler-scaled. If the raw latent starts at the
+    # sliced sigma, scaling by sqrt(sigma^2 + 1) keeps the value below 1.0. The
+    # old full-schedule sigma produced values near the full max-noise level.
+    assert 0.0 < float(first_sample.mean()) < 1.0
+
+
+def test_partial_denoise_provided_latents_are_noised(monkeypatch):
+    spec = parse_resolution("1024x1024")
+    captured: dict[str, torch.Tensor] = {}
+
+    class CaptureBackend:
+        def __call__(self, sample, timestep, encoder_hidden_states, *, added_cond_kwargs):
+            if "first_sample" not in captured:
+                captured["first_sample"] = sample.detach().clone()
+            return torch.zeros_like(sample)
+
+    def fake_randn(*args, **kwargs):
+        return torch.ones(*args, device=kwargs["device"], dtype=kwargs["dtype"])
+
+    monkeypatch.setattr("lora_trainer.trt.inference.torch.randn", fake_randn)
+
+    prompt_embeds = torch.zeros(1, 77, 2048)
+    pooled_embeds = torch.zeros(1, 1280)
+    sample_frozen_sdxl(
+        CaptureBackend(),
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=prompt_embeds,
+        pooled_prompt_embeds=pooled_embeds,
+        pooled_negative_prompt_embeds=pooled_embeds,
+        resolution=spec,
+        sampler="euler",
+        scheduler_name="normal",
+        num_inference_steps=5,
+        guidance_scale=1.0,
+        device="cpu",
+        dtype=torch.float32,
+        latents=torch.zeros(1, 4, 128, 128),
+        seed=123,
+        denoise=0.5,
+        progress=False,
+    )
+
+    first_sample = captured["first_sample"]
+    assert 0.0 < float(first_sample.mean()) < 1.0
+
+
+def test_full_denoise_provided_latents_are_noised(monkeypatch):
+    spec = parse_resolution("1024x1024")
+    captured: dict[str, torch.Tensor] = {}
+
+    class CaptureBackend:
+        def __call__(self, sample, timestep, encoder_hidden_states, *, added_cond_kwargs):
+            if "first_sample" not in captured:
+                captured["first_sample"] = sample.detach().clone()
+            return torch.zeros_like(sample)
+
+    def fake_randn(*args, **kwargs):
+        return torch.ones(*args, device=kwargs["device"], dtype=kwargs["dtype"])
+
+    monkeypatch.setattr("lora_trainer.trt.inference.torch.randn", fake_randn)
+
+    prompt_embeds = torch.zeros(1, 77, 2048)
+    pooled_embeds = torch.zeros(1, 1280)
+    sample_frozen_sdxl(
+        CaptureBackend(),
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=prompt_embeds,
+        pooled_prompt_embeds=pooled_embeds,
+        pooled_negative_prompt_embeds=pooled_embeds,
+        resolution=spec,
+        sampler="euler",
+        scheduler_name="normal",
+        num_inference_steps=5,
+        guidance_scale=1.0,
+        device="cpu",
+        dtype=torch.float32,
+        latents=torch.zeros(1, 4, 128, 128),
+        seed=123,
+        denoise=1.0,
+        progress=False,
+    )
+
+    # KSampler's max-denoise path scales noise by sqrt(1 + sigma^2); after
+    # model-input preconditioning the UNet sees unit-variance noise, not zeros.
+    assert float(captured["first_sample"].mean()) == pytest.approx(1.0)
+
+
+def test_conditioning_sequence_lengths_are_padded_by_chunks():
+    prompt_embeds = torch.ones(1, 154, 2048)
+    negative_embeds = torch.zeros(1, 77, 2048)
+
+    prompt_out, negative_out = _match_conditioning_sequence_lengths(
+        prompt_embeds,
+        negative_embeds,
+    )
+
+    assert prompt_out.shape == negative_out.shape == (1, 154, 2048)
+    assert torch.equal(negative_out[:, :77], negative_embeds)
+    assert torch.equal(negative_out[:, 77:], negative_embeds)
 
 
 def test_unet_engine_path_names_resolution_and_precision(tmp_path):

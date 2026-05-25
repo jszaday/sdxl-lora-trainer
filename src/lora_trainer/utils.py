@@ -2,9 +2,11 @@
 
 import ast
 import random
+from pathlib import Path
 
 import numpy as np
 import torch
+from PIL import Image
 
 
 def set_seed(seed: int) -> None:
@@ -133,3 +135,19 @@ def resolve_adapter_spec(
         }
 
     raise ValueError(f"Unknown adapter spec '{spec}'")
+
+
+def save_images(images: torch.Tensor, path: Path) -> None:
+    """Save a [B, 3, H, W] float32 [0, 1] tensor batch to disk.
+
+    Single-image batches write to path directly; multi-image batches write
+    path/stem_0.ext, stem_1.ext, ...
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = path.suffix or ".png"
+    for i, img in enumerate(images):
+        p = path if images.shape[0] == 1 else path.with_name(f"{path.stem}_{i}{suffix}")
+        arr = img.to(torch.float32).cpu().permute(1, 2, 0).numpy()
+        arr = (arr * 255).round().clip(0, 255).astype("uint8")
+        Image.fromarray(arr).save(p)

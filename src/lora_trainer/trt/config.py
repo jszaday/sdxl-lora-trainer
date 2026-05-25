@@ -57,6 +57,24 @@ def parse_resolution(value: str) -> ResolutionSpec:
     return SDXL_RESOLUTIONS[normalized]
 
 
+def parse_resolution_free(value: str, default: str | None = None) -> ResolutionSpec:
+    """Parse any WxH resolution string, not limited to the fixed SDXL list.
+
+    Used for hires-fix where output resolutions are arbitrary (e.g. 2048x2048).
+    Pass default to fall back when value is None or empty.
+    """
+    s = value or default
+    if not s:
+        raise ValueError("Resolution must be specified as WxH, e.g. '2048x2048'")
+    try:
+        w, h = s.lower().replace(" ", "").split("x")
+        return ResolutionSpec(name=s, width=int(w), height=int(h))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(
+            f"Resolution must be WxH, e.g. '1024x1024' or '2048x2048'. Got: {s!r}"
+        ) from exc
+
+
 def get_resolution(width: int, height: int) -> ResolutionSpec:
     """Return the supported resolution matching width and height."""
     return parse_resolution(f"{width}x{height}")

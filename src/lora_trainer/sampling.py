@@ -14,7 +14,7 @@ from PIL import Image
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from .schedulers import build_noise_scheduler
+from .schedulers import build_noise_scheduler, set_scheduler_timesteps
 
 
 @dataclass
@@ -87,6 +87,8 @@ def _encode_single_encoder(
     tokenizer,
     device: str,
     clip_skip: int = 1,
+    *,
+    pad_with_end: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Encode prompts with a single text encoder.
 
@@ -100,22 +102,82 @@ def _encode_single_encoder(
     Returns:
         Tuple of (hidden_states, pooled_embeds)
     """
-    tokens = tokenizer(
-        prompts,
-        padding="max_length",
-        max_length=tokenizer.model_max_length,
-        truncation=True,
-        return_tensors="pt",
-    ).input_ids.to(device)
+    tokens = _comfy_sdxl_tokenize(prompts, tokenizer, pad_with_end=pad_with_end).to(device)
+    batch_size, chunk_count, chunk_length = tokens.shape
 
     with torch.no_grad():
-        encoder_output = text_encoder(tokens, output_hidden_states=True)
+        encoder_output = text_encoder(
+            tokens.reshape(batch_size * chunk_count, chunk_length),
+            output_hidden_states=True,
+        )
 
     idx = -(clip_skip + 1)
-    hidden_states = encoder_output.hidden_states[idx]
-    pooled_embeds = encoder_output[0]
+    hidden_states = encoder_output.hidden_states[idx].reshape(
+        batch_size,
+        chunk_count * chunk_length,
+        -1,
+    )
+    pooled_embeds = encoder_output[0].reshape(batch_size, chunk_count, -1)[:, 0]
 
     return hidden_states, pooled_embeds
+
+
+def _comfy_sdxl_tokenize(
+    prompts: list[str],
+    tokenizer,
+    *,
+    pad_with_end: bool,
+) -> torch.Tensor:
+    """Tokenize one SDXL CLIP stream with ComfyUI's padding convention."""
+    max_length = tokenizer.model_max_length
+    chunk_capacity = max_length - 2
+    encoded: list[list[list[int]]] = []
+    max_chunks = 1
+    for prompt in prompts:
+        token_output = tokenizer(prompt)
+        input_ids = (
+            token_output["input_ids"]
+            if isinstance(token_output, dict)
+            else token_output.input_ids
+        )
+        if isinstance(input_ids, torch.Tensor):
+            input_ids = input_ids.flatten().tolist()
+        token_ids = list(input_ids)
+        if not token_ids:
+            raise ValueError("Tokenizer returned no tokens")
+
+        start_token = token_ids[0]
+        end_token = token_ids[-1]
+        content = token_ids[1:-1]
+        pad_token = end_token if pad_with_end else 0
+
+        content_chunks = [
+            content[i : i + chunk_capacity] for i in range(0, len(content), chunk_capacity)
+        ] or [[]]
+        prompt_chunks = []
+        for chunk in content_chunks:
+            ids = [start_token, *chunk, end_token]
+            ids.extend([pad_token] * (max_length - len(ids)))
+            prompt_chunks.append(ids)
+        encoded.append(prompt_chunks)
+        max_chunks = max(max_chunks, len(prompt_chunks))
+
+    for prompt_chunks in encoded:
+        while len(prompt_chunks) < max_chunks:
+            start_token = prompt_chunks[0][0]
+            if pad_with_end:
+                end_token = prompt_chunks[0][-1]
+            else:
+                first_pad = (
+                    prompt_chunks[0].index(0) if 0 in prompt_chunks[0] else len(prompt_chunks[0])
+                )
+                end_token = prompt_chunks[0][first_pad - 1]
+            pad_token = end_token if pad_with_end else 0
+            ids = [start_token, end_token]
+            ids.extend([pad_token] * (max_length - len(ids)))
+            prompt_chunks.append(ids)
+
+    return torch.tensor(encoded, dtype=torch.long)
 
 
 def encode_prompts_for_sampling(
@@ -154,12 +216,15 @@ def encode_prompts_for_sampling(
     if not has_weights:
         # Fast path: no weighting needed, use original implementation
         hidden_1, pooled_1 = _encode_single_encoder(
-            prompts, text_encoder_1, tokenizer_1, device, clip_skip
+            prompts, text_encoder_1, tokenizer_1, device, clip_skip, pad_with_end=True
         )
         hidden_2, pooled_2 = _encode_single_encoder(
-            prompts, text_encoder_2, tokenizer_2, device, clip_skip
+            prompts, text_encoder_2, tokenizer_2, device, clip_skip, pad_with_end=False
         )
 
+        cut_to = min(hidden_1.shape[1], hidden_2.shape[1])
+        hidden_1 = hidden_1[:, :cut_to]
+        hidden_2 = hidden_2[:, :cut_to]
         prompt_embeds = torch.cat([hidden_1, hidden_2], dim=-1)
         return prompt_embeds, pooled_2
 
@@ -168,10 +233,20 @@ def encode_prompts_for_sampling(
 
     # Encode empty prompts as reference baseline
     empty_hidden_1, _ = _encode_single_encoder(
-        [""] * len(prompts), text_encoder_1, tokenizer_1, device, clip_skip
+        [""] * len(prompts),
+        text_encoder_1,
+        tokenizer_1,
+        device,
+        clip_skip,
+        pad_with_end=True,
     )
     empty_hidden_2, _ = _encode_single_encoder(
-        [""] * len(prompts), text_encoder_2, tokenizer_2, device, clip_skip
+        [""] * len(prompts),
+        text_encoder_2,
+        tokenizer_2,
+        device,
+        clip_skip,
+        pad_with_end=False,
     )
 
     weighted_hidden_1 = []
@@ -186,13 +261,14 @@ def encode_prompts_for_sampling(
         if not segments or all(s.weight == 1.0 for s in segments):
             # No weights, encode normally
             hidden_1, _ = _encode_single_encoder(
-                [prompt], text_encoder_1, tokenizer_1, device, clip_skip
+                [prompt], text_encoder_1, tokenizer_1, device, clip_skip, pad_with_end=True
             )
             hidden_2, pooled = _encode_single_encoder(
-                [prompt], text_encoder_2, tokenizer_2, device, clip_skip
+                [prompt], text_encoder_2, tokenizer_2, device, clip_skip, pad_with_end=False
             )
-            weighted_hidden_1.append(hidden_1[0])
-            weighted_hidden_2.append(hidden_2[0])
+            cut_to = min(hidden_1.shape[1], hidden_2.shape[1])
+            weighted_hidden_1.append(hidden_1[:, :cut_to][0])
+            weighted_hidden_2.append(hidden_2[:, :cut_to][0])
             pooled_embeds_list.append(pooled[0])
             continue
 
@@ -205,15 +281,20 @@ def encode_prompts_for_sampling(
         positions_2 = get_token_positions(segment_texts, tokenizer_2, tokenizer_2.model_max_length)
 
         hidden_1, _ = _encode_single_encoder(
-            [plain_text], text_encoder_1, tokenizer_1, device, clip_skip
+            [plain_text], text_encoder_1, tokenizer_1, device, clip_skip, pad_with_end=True
         )
         hidden_2, pooled = _encode_single_encoder(
-            [plain_text], text_encoder_2, tokenizer_2, device, clip_skip
+            [plain_text], text_encoder_2, tokenizer_2, device, clip_skip, pad_with_end=False
         )
+        cut_to = min(hidden_1.shape[1], hidden_2.shape[1])
+        hidden_1 = hidden_1[:, :cut_to]
+        hidden_2 = hidden_2[:, :cut_to]
+        empty_1 = empty_hidden_1[i, :cut_to]
+        empty_2 = empty_hidden_2[i, :cut_to]
 
         # Apply weights to each encoder's embeddings
-        weighted_1 = apply_prompt_weights(hidden_1[0], segments, empty_hidden_1[i], positions_1)
-        weighted_2 = apply_prompt_weights(hidden_2[0], segments, empty_hidden_2[i], positions_2)
+        weighted_1 = apply_prompt_weights(hidden_1[0], segments, empty_1, positions_1)
+        weighted_2 = apply_prompt_weights(hidden_2[0], segments, empty_2, positions_2)
 
         weighted_hidden_1.append(weighted_1)
         weighted_hidden_2.append(weighted_2)
@@ -268,8 +349,58 @@ def sample_with_cfg(
     Returns:
         Denoised latents tensor
     """
+    if sampler_name == "euler":
+        from .trt.backends import TorchUnetBackend
+        from .trt.config import parse_resolution_free
+        from .trt.inference import sample_frozen_sdxl
+
+        resolution = parse_resolution_free(f"{width}x{height}")
+        backend = TorchUnetBackend(unet)
+        if seeds is not None and len(set(seeds)) > 1:
+            latents = []
+            for i, seed in enumerate(seeds):
+                latents.append(
+                    sample_frozen_sdxl(
+                        backend,
+                        prompt_embeds=prompt_embeds[i : i + 1],
+                        negative_prompt_embeds=negative_prompt_embeds[i : i + 1],
+                        pooled_prompt_embeds=pooled_prompt_embeds[i : i + 1],
+                        pooled_negative_prompt_embeds=pooled_negative_prompt_embeds[i : i + 1],
+                        resolution=resolution,
+                        sampler=sampler_name,
+                        scheduler_name=getattr(scheduler, "comfy_scheduler_name", "normal"),
+                        num_inference_steps=num_inference_steps,
+                        guidance_scale=guidance_scale,
+                        device=device,
+                        dtype=dtype,
+                        seed=seed,
+                        denoise=denoise,
+                        progress=False,
+                    )
+                )
+            return torch.cat(latents, dim=0)
+
+        seed = seeds[0] if seeds else None
+        return sample_frozen_sdxl(
+            backend,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            pooled_prompt_embeds=pooled_prompt_embeds,
+            pooled_negative_prompt_embeds=pooled_negative_prompt_embeds,
+            resolution=resolution,
+            sampler=sampler_name,
+            scheduler_name=getattr(scheduler, "comfy_scheduler_name", "normal"),
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            device=device,
+            dtype=dtype,
+            seed=seed,
+            denoise=denoise,
+            progress=True,
+        )
+
     # Set timesteps/sigmas
-    scheduler.set_timesteps(num_inference_steps, device=device)
+    set_scheduler_timesteps(scheduler, num_inference_steps, device=device)
 
     # Prepare latents (random noise)
     batch_size = prompt_embeds.shape[0]
@@ -316,6 +447,11 @@ def sample_with_cfg(
     # Denoising loop
     timesteps = scheduler.timesteps
     if denoise < 1.0:
+        # TODO: this path is currently unreachable (callers always pass denoise=1.0).
+        # When wired up, replace with ComfyUI-style sigma expansion:
+        #   expanded = round(num_inference_steps / denoise)
+        #   scheduler.set_timesteps(expanded); timesteps = scheduler.timesteps[-num_inference_steps:]  # noqa: E501
+        # Also [:cut] is wrong — it takes the high-noise end; img2img needs [-cut:].
         cut = max(1, int(len(timesteps) * denoise))
         timesteps = timesteps[:cut]
 
@@ -344,6 +480,16 @@ def sample_with_cfg(
         latents = scheduler.step(noise_pred, t, latents).prev_sample
 
     return latents
+
+
+def encode_latents(vae: AutoencoderKL, images: torch.Tensor) -> torch.Tensor:
+    """VAE-encode [0, 1] pixel images to scaled latent space."""
+    device = next(vae.parameters()).device
+    images = images.to(device=device, dtype=vae.dtype) * 2.0 - 1.0
+    with torch.inference_mode():
+        latent_dist = vae.encode(images).latent_dist
+        latents = latent_dist.mode()
+    return latents * vae.config.scaling_factor
 
 
 def decode_latents(vae: AutoencoderKL, latents: torch.Tensor) -> torch.Tensor:

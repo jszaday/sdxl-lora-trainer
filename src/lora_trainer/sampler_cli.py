@@ -5,7 +5,6 @@ import sys
 from pathlib import Path
 
 import torch
-from PIL import Image
 
 from .pipeline import (
     SAMPLERS as _SAMPLERS,
@@ -24,17 +23,7 @@ from .trt.backends import TensorRTUnavailableError
 from .trt.config import SDXL_RESOLUTIONS, infer_resolution_from_latents, parse_resolution
 from .trt.inference import sample_frozen_sdxl
 from .trt.latents import load_latents, save_latents
-from .utils import set_seed
-
-
-def _save_images(images: torch.Tensor, output: Path) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    for idx, image in enumerate(images):
-        suffix = output.suffix or ".png"
-        path = output if images.shape[0] == 1 else output.with_name(f"{output.stem}_{idx}{suffix}")
-        image_np = image.to(torch.float32).cpu().permute(1, 2, 0).numpy()
-        image_np = (image_np * 255).round().clip(0, 255).astype("uint8")
-        Image.fromarray(image_np).save(path)
+from .utils import save_images, set_seed
 
 
 def parse_args() -> argparse.Namespace:
@@ -238,7 +227,7 @@ def main() -> None:
 
     if not args.no_decode:
         images = decode_latents(vae, latents.to(torch.float32))
-        _save_images(images, args.output)
+        save_images(images, args.output)
         print(f"Saved image: {args.output}")
 
 

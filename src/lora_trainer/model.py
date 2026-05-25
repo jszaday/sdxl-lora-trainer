@@ -96,11 +96,15 @@ def _load_pipeline_from_single_file(
     cache_key = f"{checkpoint_path}_{device}_{str(dtype)}"
     if cache_key not in _SINGLE_FILE_CACHE:
         print(f"Loading full pipeline from {checkpoint_path}")
+        load_device = "cpu" if torch.device(device).type == "mps" else device
         pipeline = StableDiffusionXLPipeline.from_single_file(
             checkpoint_path,
             torch_dtype=dtype,
-            device=device,
+            device=load_device,
         )
+        if load_device != device:
+            print(f"Moving single-file pipeline from {load_device} to {device}")
+            pipeline = pipeline.to(device)
         _SINGLE_FILE_CACHE[cache_key] = pipeline
     return _SINGLE_FILE_CACHE[cache_key]
 

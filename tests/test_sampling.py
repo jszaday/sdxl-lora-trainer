@@ -11,10 +11,13 @@ from diffusers import DDIMScheduler
 
 from lora_trainer.sampling import (
     PromptSpec,
+    _comfy_sdxl_tokenize,
+    encode_latents,
     encode_prompts_for_sampling,
     load_prompt_specs,
     sample_with_cfg,
 )
+from lora_trainer.schedulers import build_noise_scheduler
 
 
 class DummyUNet(nn.Module):
@@ -71,6 +74,42 @@ class DummyTokenizer:
         return type("Output", (), {"input_ids": input_ids})()
 
 
+class FixedTokenizer:
+    model_max_length = 8
+
+    def __call__(self, prompts, **kwargs):
+        if isinstance(prompts, str):
+            input_ids = [101, 11, 12, 102]
+            return {"input_ids": input_ids}
+        return type("Output", (), {"input_ids": torch.tensor([[101, 11, 12, 102]])})()
+
+
+def test_comfy_sdxl_tokenize_clip_l_pads_with_end():
+    tokens = _comfy_sdxl_tokenize(["test"], FixedTokenizer(), pad_with_end=True)
+
+    assert tokens.tolist() == [[[101, 11, 12, 102, 102, 102, 102, 102]]]
+
+
+def test_comfy_sdxl_tokenize_clip_g_pads_with_zero():
+    tokens = _comfy_sdxl_tokenize(["test"], FixedTokenizer(), pad_with_end=False)
+
+    assert tokens.tolist() == [[[101, 11, 12, 102, 0, 0, 0, 0]]]
+
+
+def test_comfy_sdxl_tokenize_chunks_long_prompts():
+    class LongTokenizer:
+        model_max_length = 8
+
+        def __call__(self, prompt, **kwargs):
+            return {"input_ids": [101, *range(20, 32), 102]}
+
+    tokens = _comfy_sdxl_tokenize(["long"], LongTokenizer(), pad_with_end=False)
+
+    assert tokens.shape == (1, 2, 8)
+    assert tokens[0, 0].tolist() == [101, 20, 21, 22, 23, 24, 25, 102]
+    assert tokens[0, 1].tolist() == [101, 26, 27, 28, 29, 30, 31, 102]
+
+
 def test_encode_prompts_for_sampling():
     """Test that prompt encoding produces correct shapes."""
     prompts = ["a photo of a cat", "a photo of a dog"]
@@ -124,12 +163,73 @@ def test_sample_with_cfg_shape():
     assert latents.shape == (batch_size, 4, 512 // 8, 512 // 8)
 
 
+def test_sample_with_cfg_euler_uses_ksampler_loop():
+    """Euler validation sampling should share the Comfy-style loop."""
+    unet = DummyUNet()
+    scheduler = build_noise_scheduler("normal", num_inference_steps=3, sampler_name="euler")
+
+    prompt_embeds = torch.randn(1, 77, 2048)
+    negative_prompt_embeds = torch.randn(1, 77, 2048)
+    pooled_prompt_embeds = torch.randn(1, 1280)
+    pooled_negative_prompt_embeds = torch.randn(1, 1280)
+
+    latents = sample_with_cfg(
+        unet=unet,
+        scheduler=scheduler,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
+        pooled_prompt_embeds=pooled_prompt_embeds,
+        pooled_negative_prompt_embeds=pooled_negative_prompt_embeds,
+        num_inference_steps=3,
+        guidance_scale=7.0,
+        height=256,
+        width=256,
+        device="cpu",
+        dtype=torch.float32,
+        sampler_name="euler",
+        seeds=[123],
+    )
+
+    assert latents.shape == (1, 4, 32, 32)
+
+
 @pytest.mark.skip("Requires real VAE - slow test")
 def test_decode_latents():
     """Test that latent decoding produces valid images."""
     # This would require loading a real VAE, which is slow
     # Skip for now, but keep as placeholder
     pass
+
+
+def test_encode_latents_uses_posterior_mode():
+    """ComfyUI VAE encode uses posterior mode, not a fresh latent sample."""
+
+    class FakeLatentDist:
+        def sample(self):
+            return torch.full((1, 4, 8, 8), 99.0)
+
+        def mode(self):
+            return torch.full((1, 4, 8, 8), 3.0)
+
+    class FakeEncodeOutput:
+        latent_dist = FakeLatentDist()
+
+    class FakeVAE(nn.Module):
+        dtype = torch.float32
+
+        def __init__(self):
+            super().__init__()
+            self.anchor = nn.Parameter(torch.zeros(()))
+            self.config = type("Config", (), {"scaling_factor": 0.5})()
+
+        def encode(self, images):
+            assert images.min() >= -1.0
+            assert images.max() <= 1.0
+            return FakeEncodeOutput()
+
+    latents = encode_latents(FakeVAE(), torch.ones(1, 3, 64, 64))
+
+    assert torch.all(latents == 1.5)
 
 
 def test_sample_with_different_guidance_scales():

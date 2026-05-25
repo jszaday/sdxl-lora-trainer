@@ -217,20 +217,50 @@ def _request(sock_path: str, req: dict, timeout: float = 600.0) -> dict | None:
 # --- health monitor ---
 
 
+def _current_streamlit_session_id() -> str | None:
+    """Return the current per-tab Streamlit session id, if Streamlit exposes it."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+    except Exception:
+        return None
+
+    ctx = get_script_run_ctx(suppress_warning=True)
+    return getattr(ctx, "session_id", None) if ctx is not None else None
+
+
+def _streamlit_session_connected(session_id: str | None) -> bool:
+    """Return whether Streamlit still has an active browser client for a session."""
+    if session_id is None:
+        return True
+
+    try:
+        from streamlit.runtime import Runtime
+
+        session_mgr = getattr(Runtime.instance(), "_session_mgr", None)
+        if session_mgr is None:
+            return True
+        session_info = session_mgr.get_session_info(session_id)
+    except Exception:
+        return True
+
+    return session_info is not None and getattr(session_info, "client", None) is not None
+
+
 def _start_health_monitor(sock_path: str) -> socket.socket:
     """Open a persistent health connection and start a daemon pong thread.
 
     The socket is returned and must be stored in session_state.  The pong thread
-    holds only a weakref so the socket's lifetime — and therefore the server's
-    lifetime — is tied to the session: when the tab is closed and the session is
-    garbage-collected, the socket closes and the server detects EOF within one
-    heartbeat interval and calls SIGTERM on itself.
+    checks Streamlit's per-tab session on each socket timeout.  Streamlit keeps
+    session state in memory for reconnection after a tab closes, but its
+    SessionManager clears session_info.client immediately; once that happens we
+    close this socket so the server detects EOF and shuts itself down.
     """
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     conn.connect(sock_path)
     _send_msg(conn, {"type": "health"})
     conn.settimeout(2.0)  # Short timeout so we can periodically check the weakref
 
+    session_id = _current_streamlit_session_id()
     conn_ref = weakref.ref(conn)
 
     def _pong_loop() -> None:
@@ -249,11 +279,22 @@ def _start_health_monitor(sock_path: str) -> socket.socket:
             c = None  # Release strong ref so GC can close the socket when needed
 
             if timed_out:
+                if not _streamlit_session_connected(session_id):
+                    c = conn_ref()
+                    if c is not None:
+                        c.close()
+                    return
                 continue  # No ping yet; loop back and re-check weakref
             if msg is None:
                 return  # Server closed connection (server exited)
             if msg.get("type") != "ping":
                 continue
+
+            if not _streamlit_session_connected(session_id):
+                c = conn_ref()
+                if c is not None:
+                    c.close()
+                return
 
             c = conn_ref()
             if c is None:

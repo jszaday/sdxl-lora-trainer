@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import streamlit.runtime
+
 from lora_trainer import app
 
 
@@ -66,3 +68,25 @@ def test_reset_defaults_clears_private_widget_keys(monkeypatch, tmp_path):
     assert "ui.hires.first_steps" not in state
     assert state["_sock_path"] == "/tmp/app.sock"
     assert not path.exists()
+
+
+def test_streamlit_session_connected_detects_disconnected_client(monkeypatch):
+    session_info = SimpleNamespace(client=None)
+    session_mgr = SimpleNamespace(get_session_info=lambda session_id: session_info)
+    runtime = SimpleNamespace(_session_mgr=session_mgr)
+    monkeypatch.setattr(streamlit.runtime.Runtime, "instance", lambda: runtime)
+
+    assert not app._streamlit_session_connected("session-a")
+
+
+def test_streamlit_session_connected_accepts_active_client(monkeypatch):
+    session_info = SimpleNamespace(client=object())
+    session_mgr = SimpleNamespace(get_session_info=lambda session_id: session_info)
+    runtime = SimpleNamespace(_session_mgr=session_mgr)
+    monkeypatch.setattr(streamlit.runtime.Runtime, "instance", lambda: runtime)
+
+    assert app._streamlit_session_connected("session-a")
+
+
+def test_streamlit_session_connected_falls_back_to_alive_without_session():
+    assert app._streamlit_session_connected(None)

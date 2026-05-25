@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import socket
 import struct
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -21,6 +23,8 @@ from .utils import save_images
 
 _SOCKET_DEFAULT = "/tmp/lora_hires.sock"
 _LEN_FMT = ">I"
+_HEARTBEAT_INTERVAL = 5.0  # seconds between server pings
+_HEARTBEAT_TIMEOUT = 15.0  # seconds to wait for client pong before shutdown
 
 
 def _send_msg(conn: socket.socket, obj: dict) -> None:
@@ -93,6 +97,31 @@ def _warmup(pipeline: InferencePipeline) -> None:
         progress=False,
     )
     print("Warm-up done.", flush=True)
+
+
+def _run_health_monitor(conn: socket.socket) -> None:
+    """Ping the client every N seconds; shut down if it goes silent or disconnects."""
+    print("Health monitor: client connected.", flush=True)
+    try:
+        while True:
+            time.sleep(_HEARTBEAT_INTERVAL)
+            try:
+                _send_msg(conn, {"type": "ping"})
+            except OSError:
+                break
+            conn.settimeout(_HEARTBEAT_TIMEOUT)
+            try:
+                msg = _recv_msg(conn)
+            except OSError:
+                msg = None
+            finally:
+                conn.settimeout(None)
+            if msg is None or msg.get("type") != "pong":
+                break
+    finally:
+        conn.close()
+    print("Health monitor: client gone — shutting down.", flush=True)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _handle(req: dict, *, pipeline: InferencePipeline) -> dict:
@@ -348,26 +377,39 @@ def main() -> None:
 
         while True:
             conn, _ = srv.accept()
-            with conn:
-                try:
-                    req = _recv_msg(conn)
-                    if req is None:
-                        continue
-                    print(
-                        f"→ [{req.get('type', 'simple')}] {req.get('prompt', '')[:60]!r}",
-                        flush=True,
-                    )
-                    resp = _handle(req, pipeline=pipeline)
-                    print(
-                        f"  done in {resp.get('elapsed', 0):.2f}s  →  {resp.get('output', '')}",
-                        flush=True,
-                    )
-                    _send_msg(conn, resp)
-                except Exception as exc:
-                    import traceback
+            try:
+                req = _recv_msg(conn)
+            except Exception:
+                conn.close()
+                continue
+            if req is None:
+                conn.close()
+                continue
 
-                    traceback.print_exc()
-                    _send_msg(conn, {"status": "error", "message": str(exc)})
+            if req.get("type") == "health":
+                # Persistent connection — hand off to monitor thread, do NOT close here.
+                threading.Thread(target=_run_health_monitor, args=(conn,), daemon=True).start()
+                continue
+
+            # Inference request — handle and close.
+            req_type = req.get("type", "simple")
+            print(f"→ [{req_type}] {req.get('prompt', '')[:60]!r}", flush=True)
+            try:
+                resp = _handle(req, pipeline=pipeline)
+                print(
+                    f"  done in {resp.get('elapsed', 0):.2f}s  →  {resp.get('output', '')}",
+                    flush=True,
+                )
+            except Exception as exc:
+                import traceback
+
+                traceback.print_exc()
+                resp = {"status": "error", "message": str(exc)}
+            try:
+                _send_msg(conn, resp)
+            except Exception:
+                pass
+            conn.close()
 
 
 if __name__ == "__main__":

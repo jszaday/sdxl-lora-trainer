@@ -10,8 +10,10 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import uuid
+import weakref
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Literal
@@ -212,6 +214,60 @@ def _request(sock_path: str, req: dict, timeout: float = 600.0) -> dict | None:
         return _recv_msg(conn)
 
 
+# --- health monitor ---
+
+
+def _start_health_monitor(sock_path: str) -> socket.socket:
+    """Open a persistent health connection and start a daemon pong thread.
+
+    The socket is returned and must be stored in session_state.  The pong thread
+    holds only a weakref so the socket's lifetime — and therefore the server's
+    lifetime — is tied to the session: when the tab is closed and the session is
+    garbage-collected, the socket closes and the server detects EOF within one
+    heartbeat interval and calls SIGTERM on itself.
+    """
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.connect(sock_path)
+    _send_msg(conn, {"type": "health"})
+    conn.settimeout(2.0)  # Short timeout so we can periodically check the weakref
+
+    conn_ref = weakref.ref(conn)
+
+    def _pong_loop() -> None:
+        while True:
+            c = conn_ref()
+            if c is None:
+                return  # Session GC'd the socket — server will detect EOF
+            try:
+                msg = _recv_msg(c)
+                timed_out = False
+            except TimeoutError:
+                timed_out = True
+                msg = None
+            except OSError:
+                return  # Connection gone
+            c = None  # Release strong ref so GC can close the socket when needed
+
+            if timed_out:
+                continue  # No ping yet; loop back and re-check weakref
+            if msg is None:
+                return  # Server closed connection (server exited)
+            if msg.get("type") != "ping":
+                continue
+
+            c = conn_ref()
+            if c is None:
+                return
+            try:
+                _send_msg(c, {"type": "pong"})
+            except OSError:
+                return
+            c = None  # Release
+
+    threading.Thread(target=_pong_loop, daemon=True).start()
+    return conn
+
+
 # --- server lifecycle ---
 
 
@@ -245,6 +301,13 @@ def _server_alive() -> bool:
 
 
 def _kill_server() -> None:
+    # Close health connection first so the server can begin its own cleanup.
+    health_conn = st.session_state.pop("_health_conn", None)
+    if health_conn is not None:
+        try:
+            health_conn.close()
+        except OSError:
+            pass
     proc = st.session_state.pop("_server_proc", None)
     if proc is not None and proc.poll() is None:
         proc.terminate()
@@ -806,6 +869,13 @@ def main() -> None:
                 st.stop()
             st.session_state["_server_cfg"] = cfg_key
             srv_status.update(label="Server ready", state="complete")
+
+    # Establish health monitor if not already active (once per server instance).
+    if "_health_conn" not in st.session_state:
+        try:
+            st.session_state["_health_conn"] = _start_health_monitor(sock_path)
+        except Exception as exc:
+            st.warning(f"Could not establish server health monitor: {exc}")
 
     # Build request
     req: dict = {

@@ -112,24 +112,17 @@ def build_noise_scheduler(
         supported_sched = ["simple", "normal", "karras", "exponential", "sgm_uniform"]
         raise ValueError(f"Unknown scheduler '{name}'. Supported: {', '.join(supported_sched)}")
 
-    # Special handling for DDIM (doesn't support use_karras_sigmas in all versions)
+    # DDIM needs clip_sample=False and set_alpha_to_one=False; merge before instantiation.
     if cls == DDIMScheduler:
-        # DDIM uses different flags
-        ddim_config = {
-            "beta_start": 0.00085,
-            "beta_end": 0.012,
-            "beta_schedule": "scaled_linear",
-            "num_train_timesteps": 1000,
-            "clip_sample": False,
-            "set_alpha_to_one": False,
-        }
-        return DDIMScheduler(**ddim_config)
+        scheduler_config["clip_sample"] = False
+        scheduler_config["set_alpha_to_one"] = False
 
     # Instantiate
     try:
         scheduler = cls(**scheduler_config)
     except TypeError:
         import warnings
+
         warnings.warn(
             f"{cls.__name__} rejected use_karras_sigmas/timestep_spacing — "
             "falling back to defaults. Sigma schedule may not match ComfyUI.",
@@ -140,12 +133,22 @@ def build_noise_scheduler(
         scheduler = cls(**scheduler_config)
 
     scheduler.comfy_scheduler_name = scheduler_key
-    scheduler.comfy_model_sigmas = scheduler.sigmas.detach().cpu().float().clone()
+    # Not all schedulers (e.g. DDIM, PNDM) expose .sigmas at init time.
+    if hasattr(scheduler, "sigmas"):
+        scheduler.comfy_model_sigmas = scheduler.sigmas.detach().cpu().float().clone()
     return scheduler
 
 
 def _model_sigmas_ascending(scheduler) -> torch.Tensor:
-    sigmas = getattr(scheduler, "comfy_model_sigmas", scheduler.sigmas).detach().cpu().float()
+    raw = getattr(scheduler, "comfy_model_sigmas", None)
+    if raw is None:
+        raw = getattr(scheduler, "sigmas", None)
+    if raw is None:
+        raise RuntimeError(
+            f"{type(scheduler).__name__} has no sigma schedule; "
+            "cannot compute ComfyUI-compatible sigmas."
+        )
+    sigmas = raw.detach().cpu().float()
     sigmas = sigmas[sigmas > 0]
     if float(sigmas[0]) > float(sigmas[-1]):
         sigmas = sigmas.flip(0)
@@ -225,6 +228,11 @@ def _comfy_exponential_sigmas(scheduler, steps: int) -> list[float]:
 def comfy_sigmas(scheduler, steps: int) -> list[float] | None:
     """Return ComfyUI-compatible sigmas for supported scheduler names."""
     name = getattr(scheduler, "comfy_scheduler_name", None)
+    if name is None:
+        return None
+    # Schedulers without a sigma model (e.g. DDIM, PNDM) can't use custom sigmas.
+    if not (hasattr(scheduler, "comfy_model_sigmas") or hasattr(scheduler, "sigmas")):
+        return None
     if name == "normal":
         return _comfy_normal_sigmas(scheduler, steps)
     if name == "sgm_uniform":

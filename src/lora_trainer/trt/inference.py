@@ -10,7 +10,6 @@ from lora_trainer.schedulers import (
     build_noise_scheduler,
     comfy_timesteps_for_sigmas,
     set_scheduler_timesteps,
-    start_sigma_for_timesteps,
 )
 
 from .backends import UnetBackend
@@ -59,11 +58,22 @@ def _slice_schedule_for_denoise(
     scheduler,
     num_inference_steps: int,
     denoise: float,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    sigmas = scheduler.sigmas
+    *,
+    use_comfy_timesteps: bool,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    sigmas = getattr(scheduler, "sigmas", None)
+    if sigmas is None:
+        # Non-sigma schedulers (e.g. DDIM, PNDM): use their native timesteps directly.
+        timesteps = scheduler.timesteps
+        if denoise < 1.0:
+            timesteps = timesteps[-num_inference_steps:]
+        return timesteps, None
+    timesteps = scheduler.timesteps
     if denoise < 1.0:
         sigmas = sigmas[-(num_inference_steps + 1) :]
-    timesteps = comfy_timesteps_for_sigmas(scheduler, sigmas[:-1])
+        timesteps = timesteps[-num_inference_steps:]
+    if use_comfy_timesteps:
+        timesteps = comfy_timesteps_for_sigmas(scheduler, sigmas[:-1])
     return timesteps, sigmas
 
 
@@ -185,6 +195,10 @@ def _match_conditioning_sequence_lengths(
             f"Expected SDXL conditioning length to be a multiple of 77, got {target_len}"
         )
 
+    # TODO: .repeat() copies the chunk verbatim including BOS/EOS tokens, which matches
+    # ComfyUI's _cond_equal_size convention but is semantically questionable — a true
+    # empty second chunk should probably be [BOS, EOS, EOS, EOS, ...] not a full copy.
+    # Revisit once we have side-by-side quality comparisons vs. ComfyUI for long prompts.
     def pad_chunks(embeds: torch.Tensor) -> torch.Tensor:
         if embeds.shape[1] == target_len:
             return embeds
@@ -238,6 +252,7 @@ def sample_frozen_sdxl(
         scheduler,
         num_inference_steps,
         denoise,
+        use_comfy_timesteps=sampler == "euler",
     )
 
     prompt_embeds, negative_prompt_embeds = _match_conditioning_sequence_lengths(
@@ -261,6 +276,11 @@ def sample_frozen_sdxl(
     added_cond_kwargs = {"text_embeds": text_embeds, "time_ids": time_ids}
 
     if sampler == "euler":
+        if sigmas is None:
+            raise ValueError(
+                f"Euler sampler requires a sigma-based scheduler (got {scheduler_name!r}). "
+                "Use a sigma-compatible scheduler such as 'karras' or 'normal'."
+            )
         latents = _prepare_ksampler_latents(
             latents,
             resolution=resolution,
@@ -294,8 +314,11 @@ def sample_frozen_sdxl(
             seed=seed,
         )
         if denoise < 1.0:
-            start_sigma = start_sigma_for_timesteps(scheduler, timesteps, dtype=dtype)
-            latents = latents * start_sigma
+            if sigmas is not None:
+                start_sigma = sigmas[0].to(device=device, dtype=dtype)
+                latents = latents * start_sigma
+            else:
+                latents = latents * scheduler.init_noise_sigma
         else:
             latents = latents * scheduler.init_noise_sigma
     else:
@@ -303,8 +326,13 @@ def sample_frozen_sdxl(
         validate_latents_shape(latents, resolution, batch_size=batch_size)
         if denoise < 1.0:
             noise = _randn_latents_like(latents, device=device, dtype=dtype, seed=seed)
-            start_sigma = start_sigma_for_timesteps(scheduler, timesteps, dtype=dtype)
-            latents = latents + noise * start_sigma
+            if sigmas is not None:
+                start_sigma = sigmas[0].to(device=device, dtype=dtype)
+                latents = latents + noise * start_sigma
+            else:
+                latents = scheduler.add_noise(latents, noise, timesteps[:1].to(device=device)).to(
+                    dtype=dtype
+                )
 
     iterator = tqdm(timesteps, desc="Sampling", leave=False) if progress else timesteps
     if device == "cuda":

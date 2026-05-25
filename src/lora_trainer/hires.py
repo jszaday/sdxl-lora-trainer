@@ -25,7 +25,7 @@ def _resize(images: torch.Tensor, height: int, width: int) -> torch.Tensor:
 def _feather_mask(h: int, w: int, feather: int, device: str) -> torch.Tensor:
     mask = torch.ones(1, 1, h, w, device=device)
     for i in range(min(feather, h // 2, w // 2)):
-        v = i / feather
+        v = (i + 1) / feather
         mask[:, :, i, :].clamp_(max=v)
         mask[:, :, h - 1 - i, :].clamp_(max=v)
         mask[:, :, :, i].clamp_(max=v)

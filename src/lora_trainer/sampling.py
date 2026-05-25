@@ -136,9 +136,7 @@ def _comfy_sdxl_tokenize(
     for prompt in prompts:
         token_output = tokenizer(prompt)
         input_ids = (
-            token_output["input_ids"]
-            if isinstance(token_output, dict)
-            else token_output.input_ids
+            token_output["input_ids"] if isinstance(token_output, dict) else token_output.input_ids
         )
         if isinstance(input_ids, torch.Tensor):
             input_ids = input_ids.flatten().tolist()
@@ -447,13 +445,8 @@ def sample_with_cfg(
     # Denoising loop
     timesteps = scheduler.timesteps
     if denoise < 1.0:
-        # TODO: this path is currently unreachable (callers always pass denoise=1.0).
-        # When wired up, replace with ComfyUI-style sigma expansion:
-        #   expanded = round(num_inference_steps / denoise)
-        #   scheduler.set_timesteps(expanded); timesteps = scheduler.timesteps[-num_inference_steps:]  # noqa: E501
-        # Also [:cut] is wrong — it takes the high-noise end; img2img needs [-cut:].
         cut = max(1, int(len(timesteps) * denoise))
-        timesteps = timesteps[:cut]
+        timesteps = timesteps[-cut:]
 
     for t in tqdm(timesteps, desc="Sampling", leave=False):
         # Expand latents for CFG

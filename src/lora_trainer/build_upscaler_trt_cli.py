@@ -130,12 +130,13 @@ def main() -> None:
     print("=" * 55)
     print(f"  PyTorch fp32 (ComfyUI baseline):  {baseline:.3f}s")
     compiled = results["compiled_fp32_s"]
-    print(f"  torch.compile fp32:               {compiled:.3f}s  ({baseline/compiled:.1f}×)")
+    print(f"  torch.compile fp32:               {compiled:.3f}s  ({baseline / compiled:.1f}×)")
     if "trt_fp16_s" in results:
         import math
+
         trt = results["trt_fp16_s"]
         if not math.isnan(trt):
-            print(f"  TRT fp16:                         {trt:.3f}s  ({baseline/trt:.1f}×)")
+            print(f"  TRT fp16:                         {trt:.3f}s  ({baseline / trt:.1f}×)")
         else:
             print("  TRT fp16:                         FAILED (see above)")
     print("=" * 55)

@@ -12,7 +12,9 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
+from typing import Literal
 
 import streamlit as st
 from PIL import Image
@@ -23,43 +25,6 @@ from lora_trainer.trt.config import SDXL_RESOLUTIONS
 _NO_MODEL = "— None —"
 _LEN_FMT = ">I"
 _SETTINGS_PATH = Path.home() / ".config" / "lora-trainer" / "app_settings.json"
-
-_DEFAULTS: dict = {
-    # Resolution
-    "resolution": "1024x1024",
-    "hires_resolution": "1024x1024",
-    # Sampling
-    "sampler": "euler_ancestral",
-    "scheduler": "normal",
-    "cfg": 7.0,
-    "clip_skip": 1,
-    # Simple mode
-    "steps": 25,
-    "denoise": 1.0,
-    # Hires mode
-    "hires_enabled": False,
-    "first_steps": 25,
-    "first_denoise": 1.0,
-    "second_steps": 25,
-    "second_denoise": 0.7,
-    # Seed
-    "random_seed": True,
-    "seed": 42,
-    # Backend
-    "backend": "torch",
-    "precision": "fp16",
-    "compile_unet": False,
-    # ADetailer
-    "face_denoise": 0.4,
-    "face_steps": 20,
-    "face_size": 512,
-    "face_padding": 32,
-    "face_feather": 16,
-    # Prompts
-    "prompt": "",
-    "negative": "",
-}
-_FIELD_KEYS = tuple(_DEFAULTS)
 
 _managed_procs: list[subprocess.Popen] = []
 
@@ -74,57 +39,125 @@ def _cleanup_procs() -> None:
 # --- settings ---
 
 
-def _load_settings() -> dict:
+@dataclass
+class ModelSettings:
+    checkpoint: str = ""
+    upscale_model: str = _NO_MODEL
+    face_model: str = _NO_MODEL
+    lora: str = _NO_MODEL
+    lora_rank: int = 16
+
+
+@dataclass
+class SamplingSettings:
+    sampler: str = "euler"
+    scheduler: str = "normal"
+    cfg: float = 7.0
+    clip_skip: int = 1
+
+
+@dataclass
+class SimpleSettings:
+    steps: int = 25
+    denoise: float = 1.0
+
+
+@dataclass
+class HiresSettings:
+    hires_resolution: str = "1024x1024"
+    first_steps: int = 25
+    first_denoise: float = 1.0
+    second_steps: int = 25
+    second_denoise: float = 0.7
+
+
+@dataclass
+class SeedSettings:
+    random_seed: bool = True
+    seed: int = 42
+
+
+@dataclass
+class BackendSettings:
+    backend: Literal["torch", "trt"] = "torch"
+    precision: Literal["fp16", "bf16", "fp32"] = "fp16"
+    compile_unet: bool = False
+
+
+@dataclass
+class ADetailerSettings:
+    face_denoise: float = 0.4
+    face_steps: int = 20
+    face_size: int = 512
+    face_padding: int = 32
+    face_feather: int = 16
+
+
+@dataclass
+class PromptSettings:
+    prompt: str = ""
+    negative: str = ""
+
+
+@dataclass
+class AppSettings:
+    mode: Literal["simple", "hires"] = "simple"
+    resolution: str = "1024x1024"
+    models: ModelSettings = field(default_factory=ModelSettings)
+    sampling: SamplingSettings = field(default_factory=SamplingSettings)
+    simple: SimpleSettings = field(default_factory=SimpleSettings)
+    hires: HiresSettings = field(default_factory=HiresSettings)
+    seed: SeedSettings = field(default_factory=SeedSettings)
+    backend: BackendSettings = field(default_factory=BackendSettings)
+    adetailer: ADetailerSettings = field(default_factory=ADetailerSettings)
+    prompt: PromptSettings = field(default_factory=PromptSettings)
+
+
+def _dataclass_from_dict(cls, data: object):
+    if not isinstance(data, dict):
+        return cls()
+    kwargs = {}
+    for item in fields(cls):
+        default = getattr(cls(), item.name)
+        value = data.get(item.name, default)
+        if is_dataclass(default):
+            value = _dataclass_from_dict(type(default), value)
+        kwargs[item.name] = value
+    return cls(**kwargs)
+
+
+def _load_settings() -> AppSettings:
     try:
-        return json.loads(_SETTINGS_PATH.read_text())
+        return _dataclass_from_dict(AppSettings, json.loads(_SETTINGS_PATH.read_text()))
     except Exception:
-        return {}
-
-
-def _field_value(key: str) -> object:
-    values = st.session_state.get("_field_values", {})
-    return st.session_state.get(key, values.get(key, _DEFAULTS[key]))
-
-
-def _set_field_value(key: str, value: object) -> None:
-    st.session_state[key] = value
-    st.session_state.setdefault("_field_values", {})[key] = value
-
-
-def _sync_field_values() -> None:
-    values = st.session_state.setdefault("_field_values", {})
-    for key in _FIELD_KEYS:
-        if key in st.session_state:
-            values[key] = st.session_state[key]
-
-
-def _hydrate_field_keys() -> None:
-    values = st.session_state.setdefault("_field_values", {})
-    for key in _FIELD_KEYS:
-        st.session_state.setdefault(key, values.get(key, _DEFAULTS[key]))
+        return AppSettings()
 
 
 def _reset_defaults() -> None:
-    for key, value in _DEFAULTS.items():
-        _set_field_value(key, value)
+    st.session_state["settings"] = AppSettings()
+    for key in list(st.session_state.keys()):
+        if str(key).startswith("ui."):
+            st.session_state.pop(key, None)
     _SETTINGS_PATH.unlink(missing_ok=True)
 
 
-def _save_settings(state: dict) -> None:
+def _save_settings(settings: AppSettings) -> None:
     _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    values = dict(state.get("_field_values", {}))
-    values.update({k: state[k] for k in _FIELD_KEYS if k in state})
-    keys = (
-        *_DEFAULTS,
-        "checkpoint",
-        "upscale_model",
-        "face_model",
-        "lora",
-        "lora_rank",
-    )
-    _SETTINGS_PATH.write_text(
-        json.dumps({k: state.get(k, values.get(k)) for k in keys if k in state or k in values})
-    )
+    _SETTINGS_PATH.write_text(json.dumps(asdict(settings), indent=2, sort_keys=True))
+
+
+def _settings() -> AppSettings:
+    if "settings" not in st.session_state:
+        st.session_state["settings"] = _load_settings()
+    return st.session_state["settings"]
+
+
+def _choice_index(options: list[str], value: str) -> int:
+    return options.index(value) if value in options else 0
+
+
+def _valid_choice(value: str, options: list[str], default: str) -> str:
+    return value if value in options else default
 
 
 # --- model scanning ---
@@ -166,9 +199,14 @@ def _recv_msg(conn: socket.socket) -> dict | None:
     return json.loads(body) if body else None
 
 
-def _request(sock_path: str, req: dict) -> dict | None:
+def _request(sock_path: str, req: dict, timeout: float = 600.0) -> dict | None:
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    conn.connect(sock_path)
+    try:
+        conn.settimeout(timeout)
+        conn.connect(sock_path)
+    except Exception:
+        conn.close()
+        raise
     with conn:
         _send_msg(conn, req)
         return _recv_msg(conn)
@@ -274,9 +312,13 @@ def _launch_server(
     return proc
 
 
-def _wait_for_socket(sock_path: str, timeout: int = 300) -> bool:
+def _wait_for_socket(
+    sock_path: str, timeout: int = 300, proc: subprocess.Popen | None = None
+) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False  # server crashed during startup
         try:
             conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             conn.settimeout(1.0)
@@ -286,16 +328,6 @@ def _wait_for_socket(sock_path: str, timeout: int = 300) -> bool:
         except (FileNotFoundError, ConnectionRefusedError, OSError):
             time.sleep(0.5)
     return False
-
-
-def _sync_hires_res() -> None:
-    """When base resolution changes, keep hires_resolution in sync if they were equal."""
-    prev = st.session_state.get("_prev_resolution")
-    new = st.session_state.get("resolution", _DEFAULTS["resolution"])
-    if st.session_state.get("hires_resolution") == prev:
-        _set_field_value("hires_resolution", new)
-    _set_field_value("resolution", new)
-    st.session_state["_prev_resolution"] = new
 
 
 # --- startup arg parsing ---
@@ -342,63 +374,48 @@ def main() -> None:
         st.session_state["_out_path"] = Path(f"/tmp/lora_app_{sid}.png")
         st.session_state["_out_first_path"] = Path(f"/tmp/lora_app_{sid}_first.png")
 
+    settings = _settings()
     if "pending_seed" in st.session_state:
-        _set_field_value("seed", st.session_state.pop("pending_seed"))
+        settings.seed.seed = int(st.session_state.pop("pending_seed"))
 
-    # Load settings once per browser session
-    if "settings_loaded" not in st.session_state:
-        stored = _load_settings()
-        st.session_state["_field_values"] = {k: stored.get(k, v) for k, v in _DEFAULTS.items()}
-        for k in _DEFAULTS:
-            st.session_state[k] = st.session_state["_field_values"][k]
-        st.session_state["checkpoint"] = (
-            stored.get("checkpoint")
-            if stored.get("checkpoint") in checkpoint_paths
-            else checkpoint_paths[0]
-        )
-        st.session_state["upscale_model"] = (
-            stored.get("upscale_model")
-            if stored.get("upscale_model") in upscale_paths
-            else _NO_MODEL
-        )
-        st.session_state["face_model"] = (
-            stored.get("face_model") if stored.get("face_model") in face_paths else _NO_MODEL
-        )
-        st.session_state["lora"] = (
-            stored.get("lora") if stored.get("lora") in lora_paths else _NO_MODEL
-        )
-        st.session_state["lora_rank"] = stored.get("lora_rank", 16)
-        st.session_state["_prev_resolution"] = _field_value("resolution")
-        st.session_state["_prev_hires_enabled"] = bool(_field_value("hires_enabled"))
-        st.session_state["settings_loaded"] = True
-    else:
-        _hydrate_field_keys()
-
-    def _ensure_valid(key: str, options: list) -> None:
-        if _field_value(key) not in options:
-            _set_field_value(key, options[0])
-
-    _ensure_valid("resolution", list(SDXL_RESOLUTIONS))
-    _ensure_valid("hires_resolution", list(SDXL_RESOLUTIONS))
-    _ensure_valid("sampler", SAMPLERS)
-    _ensure_valid("scheduler", SCHEDULERS)
-    _ensure_valid("precision", ["fp16", "bf16", "fp32"])
-    _ensure_valid("backend", ["torch", "trt"])
+    resolution_options = list(SDXL_RESOLUTIONS)
+    settings.resolution = _valid_choice(settings.resolution, resolution_options, "1024x1024")
+    settings.hires.hires_resolution = _valid_choice(
+        settings.hires.hires_resolution, resolution_options, settings.resolution
+    )
+    settings.sampling.sampler = _valid_choice(settings.sampling.sampler, SAMPLERS, "euler")
+    settings.sampling.scheduler = _valid_choice(settings.sampling.scheduler, SCHEDULERS, "normal")
+    settings.backend.precision = _valid_choice(
+        settings.backend.precision, ["fp16", "bf16", "fp32"], "fp16"
+    )
+    settings.backend.backend = _valid_choice(settings.backend.backend, ["torch", "trt"], "torch")
+    settings.models.checkpoint = _valid_choice(
+        settings.models.checkpoint, checkpoint_paths, checkpoint_paths[0]
+    )
+    settings.models.upscale_model = _valid_choice(
+        settings.models.upscale_model, upscale_paths, _NO_MODEL
+    )
+    settings.models.face_model = _valid_choice(settings.models.face_model, face_paths, _NO_MODEL)
+    settings.models.lora = _valid_choice(settings.models.lora, lora_paths, _NO_MODEL)
+    if settings.models.upscale_model == _NO_MODEL:
+        settings.mode = "simple"
 
     # --- sidebar ---
     with st.sidebar:
         st.header("Model")
-        checkpoint = st.selectbox(
+        settings.models.checkpoint = st.selectbox(
             "Checkpoint",
             checkpoint_paths,
             format_func=lambda p: Path(p).stem,
-            key="checkpoint",
+            index=_choice_index(checkpoint_paths, settings.models.checkpoint),
+            key="ui.models.checkpoint",
         )
-        upscale_model_raw = st.selectbox(
+        settings.models.upscale_model = st.selectbox(
             "Upscale model",
             upscale_paths,
             format_func=lambda p: _NO_MODEL if p == _NO_MODEL else Path(p).stem,
-            key="upscale_model",
+            index=_choice_index(upscale_paths, settings.models.upscale_model),
+            key="ui.models.upscale_model",
             disabled=not has_upscalers,
             help=(
                 "Spandrel upscale model for hires-fix. Add --upscale_model_dir to enable."
@@ -406,13 +423,16 @@ def main() -> None:
                 else None
             ),
         )
-        upscale_model = None if upscale_model_raw == _NO_MODEL else upscale_model_raw
+        upscale_model = (
+            None if settings.models.upscale_model == _NO_MODEL else settings.models.upscale_model
+        )
 
-        face_model_raw = st.selectbox(
+        settings.models.face_model = st.selectbox(
             "Face model (ADetailer)",
             face_paths,
             format_func=lambda p: _NO_MODEL if p == _NO_MODEL else Path(p).stem,
-            key="face_model",
+            index=_choice_index(face_paths, settings.models.face_model),
+            key="ui.models.face_model",
             disabled=not face_models,
             help=(
                 "YOLO face model for ADetailer. Add --face_model_dir to enable."
@@ -420,160 +440,278 @@ def main() -> None:
                 else None
             ),
         )
-        face_model = None if face_model_raw == _NO_MODEL else face_model_raw
+        face_model = None if settings.models.face_model == _NO_MODEL else settings.models.face_model
 
-        lora_raw = st.selectbox(
+        settings.models.lora = st.selectbox(
             "LoRA",
             lora_paths,
             format_func=lambda p: _NO_MODEL if p == _NO_MODEL else Path(p).stem,
-            key="lora",
+            index=_choice_index(lora_paths, settings.models.lora),
+            key="ui.models.lora",
         )
-        lora = None if lora_raw == _NO_MODEL else lora_raw
-        lora_rank = st.number_input(
-            "LoRA rank", min_value=1, key="lora_rank", disabled=lora is None
+        lora = None if settings.models.lora == _NO_MODEL else settings.models.lora
+        settings.models.lora_rank = int(
+            st.number_input(
+                "LoRA rank",
+                min_value=1,
+                value=int(settings.models.lora_rank),
+                key="ui.models.lora_rank",
+                disabled=lora is None,
+            )
         )
 
         # --- Hires-fix ---
         if has_upscalers:
             st.header("Hires-fix")
-            if upscale_model is None and _field_value("hires_enabled"):
-                _set_field_value("hires_enabled", False)
             hires_enabled = st.checkbox(
                 "Enable hires-fix",
-                key="hires_enabled",
+                value=settings.mode == "hires",
+                key="ui.mode.hires_enabled",
                 disabled=upscale_model is None,
                 help="Runs SDXL → upscale → downscale → SDXL for sharper high-res results.",
             )
         else:
             hires_enabled = False
-            _set_field_value("hires_enabled", False)
+        settings.mode = "hires" if hires_enabled and upscale_model is not None else "simple"
 
         # --- Resolution ---
         st.header("Resolution")
-        resolution = st.selectbox(
+        settings.resolution = st.selectbox(
             "Base resolution",
-            list(SDXL_RESOLUTIONS),
-            key="resolution",
-            on_change=_sync_hires_res,
+            resolution_options,
+            index=_choice_index(resolution_options, settings.resolution),
+            key="ui.resolution",
         )
-        if hires_enabled and not st.session_state.get("_prev_hires_enabled", False):
-            _set_field_value("hires_resolution", resolution)
+        resolution = settings.resolution
         if hires_enabled:
-            hires_resolution = st.selectbox(
+            settings.hires.hires_resolution = st.selectbox(
                 "Hires resolution",
-                list(SDXL_RESOLUTIONS),
-                key="hires_resolution",
-                help="Target resolution for the second SDXL pass. Tracks base until changed.",
+                resolution_options,
+                index=_choice_index(resolution_options, settings.hires.hires_resolution),
+                key="ui.hires.hires_resolution",
+                help="Target resolution for the second SDXL pass.",
             )
         else:
-            hires_resolution = resolution
+            settings.hires.hires_resolution = _valid_choice(
+                settings.hires.hires_resolution, resolution_options, resolution
+            )
+        hires_resolution = settings.hires.hires_resolution if hires_enabled else resolution
 
         # --- Sampling ---
         st.header("Sampling")
-        sampler = st.selectbox("Sampler", SAMPLERS, key="sampler")
-        scheduler = st.selectbox("Scheduler", SCHEDULERS, key="scheduler")
-        cfg = st.slider("CFG", min_value=1.0, max_value=15.0, step=0.5, key="cfg")
-        clip_skip = st.number_input("Clip skip", min_value=1, max_value=4, step=1, key="clip_skip")
+        settings.sampling.sampler = st.selectbox(
+            "Sampler",
+            SAMPLERS,
+            index=_choice_index(SAMPLERS, settings.sampling.sampler),
+            key="ui.sampling.sampler",
+        )
+        settings.sampling.scheduler = st.selectbox(
+            "Scheduler",
+            SCHEDULERS,
+            index=_choice_index(SCHEDULERS, settings.sampling.scheduler),
+            key="ui.sampling.scheduler",
+        )
+        settings.sampling.cfg = float(
+            st.slider(
+                "CFG",
+                min_value=1.0,
+                max_value=15.0,
+                step=0.5,
+                value=float(settings.sampling.cfg),
+                key="ui.sampling.cfg",
+            )
+        )
+        settings.sampling.clip_skip = int(
+            st.number_input(
+                "Clip skip",
+                min_value=1,
+                max_value=4,
+                step=1,
+                value=int(settings.sampling.clip_skip),
+                key="ui.sampling.clip_skip",
+            )
+        )
+        sampler = settings.sampling.sampler
+        scheduler = settings.sampling.scheduler
+        cfg = settings.sampling.cfg
+        clip_skip = settings.sampling.clip_skip
 
         if hires_enabled:
             st.subheader("First pass")
-            st.slider("Steps", 1, 60, key="first_steps")
-            st.slider(
-                "Denoise",
-                0.0,
-                1.0,
-                step=0.05,
-                key="first_denoise",
+            settings.hires.first_steps = int(
+                st.slider(
+                    "Steps",
+                    1,
+                    60,
+                    value=int(settings.hires.first_steps),
+                    key="ui.hires.first_steps",
+                )
+            )
+            settings.hires.first_denoise = float(
+                st.slider(
+                    "Denoise",
+                    0.0,
+                    1.0,
+                    step=0.05,
+                    value=float(settings.hires.first_denoise),
+                    key="ui.hires.first_denoise",
+                )
             )
             st.subheader("Second pass")
-            st.slider("Steps", 1, 60, key="second_steps")
-            st.slider(
-                "Denoise",
-                0.0,
-                1.0,
-                step=0.05,
-                key="second_denoise",
+            settings.hires.second_steps = int(
+                st.slider(
+                    "Steps",
+                    1,
+                    60,
+                    value=int(settings.hires.second_steps),
+                    key="ui.hires.second_steps",
+                )
+            )
+            settings.hires.second_denoise = float(
+                st.slider(
+                    "Denoise",
+                    0.0,
+                    1.0,
+                    step=0.05,
+                    value=float(settings.hires.second_denoise),
+                    key="ui.hires.second_denoise",
+                )
             )
         else:
-            st.slider("Steps", min_value=1, max_value=50, key="steps")
-            st.slider("Denoise", min_value=0.0, max_value=1.0, step=0.05, key="denoise")
+            settings.simple.steps = int(
+                st.slider(
+                    "Steps",
+                    min_value=1,
+                    max_value=50,
+                    value=int(settings.simple.steps),
+                    key="ui.simple.steps",
+                )
+            )
+            settings.simple.denoise = float(
+                st.slider(
+                    "Denoise",
+                    min_value=0.0,
+                    max_value=1.0,
+                    step=0.05,
+                    value=float(settings.simple.denoise),
+                    key="ui.simple.denoise",
+                )
+            )
 
-        random_seed = st.checkbox("Random seed", key="random_seed")
-        st.number_input(
-            "Seed",
-            min_value=0,
-            max_value=2**32 - 1,
-            step=1,
-            key="seed",
-            disabled=random_seed,
+        settings.seed.random_seed = st.checkbox(
+            "Random seed",
+            value=bool(settings.seed.random_seed),
+            key="ui.seed.random_seed",
+        )
+        random_seed = settings.seed.random_seed
+        settings.seed.seed = int(
+            st.number_input(
+                "Seed",
+                min_value=0,
+                max_value=2**32 - 1,
+                step=1,
+                value=int(settings.seed.seed),
+                key="ui.seed.seed",
+                disabled=random_seed,
+            )
         )
 
         if hires_enabled:
-            _set_field_value("backend", "torch")
+            settings.backend.backend = "torch"
 
         # --- Backend ---
         st.header("Backend")
         # TRT doesn't support hires (resolution-specific engines, two passes)
-        backend = st.radio(
+        settings.backend.backend = st.radio(
             "Backend",
             ["torch", "trt"],
-            key="backend",
+            index=_choice_index(["torch", "trt"], settings.backend.backend),
+            key="ui.backend.backend",
             disabled=hires_enabled,
             help="TRT is disabled in hires mode (engines are resolution-specific).",
         )
         if hires_enabled:
-            backend = "torch"
+            settings.backend.backend = "torch"
+        backend = settings.backend.backend
 
-        precision = st.radio("Precision", ["fp16", "bf16", "fp32"], key="precision")
-        compile_unet = st.checkbox(
+        settings.backend.precision = st.radio(
+            "Precision",
+            ["fp16", "bf16", "fp32"],
+            index=_choice_index(["fp16", "bf16", "fp32"], settings.backend.precision),
+            key="ui.backend.precision",
+        )
+        precision = settings.backend.precision
+        settings.backend.compile_unet = st.checkbox(
             "Compile UNet",
-            key="compile_unet",
+            value=bool(settings.backend.compile_unet),
+            key="ui.backend.compile_unet",
             disabled=backend != "torch",
             help="torch.compile(reduce-overhead). Adds ~30 s startup, saves ~1 s/gen after.",
         )
+        compile_unet = settings.backend.compile_unet
 
         # --- ADetailer params (shown when face model is selected) ---
         if face_model:
             st.header("ADetailer")
-            st.slider(
-                "Face denoise",
-                0.0,
-                1.0,
-                step=0.05,
-                key="face_denoise",
+            settings.adetailer.face_denoise = float(
+                st.slider(
+                    "Face denoise",
+                    0.0,
+                    1.0,
+                    step=0.05,
+                    value=float(settings.adetailer.face_denoise),
+                    key="ui.adetailer.face_denoise",
+                )
             )
-            st.slider("Face steps", 1, 40, key="face_steps")
-            st.number_input(
-                "Face size",
-                min_value=256,
-                max_value=1024,
-                step=64,
-                key="face_size",
+            settings.adetailer.face_steps = int(
+                st.slider(
+                    "Face steps",
+                    1,
+                    40,
+                    value=int(settings.adetailer.face_steps),
+                    key="ui.adetailer.face_steps",
+                )
             )
-            st.number_input(
-                "Face padding",
-                min_value=0,
-                max_value=128,
-                step=8,
-                key="face_padding",
+            settings.adetailer.face_size = int(
+                st.number_input(
+                    "Face size",
+                    min_value=512,
+                    max_value=1024,
+                    step=64,
+                    value=max(512, int(settings.adetailer.face_size)),
+                    key="ui.adetailer.face_size",
+                )
             )
-            st.number_input(
-                "Face feather",
-                min_value=0,
-                max_value=64,
-                step=4,
-                key="face_feather",
+            settings.adetailer.face_padding = int(
+                st.number_input(
+                    "Face padding",
+                    min_value=0,
+                    max_value=128,
+                    step=8,
+                    value=int(settings.adetailer.face_padding),
+                    key="ui.adetailer.face_padding",
+                )
+            )
+            settings.adetailer.face_feather = int(
+                st.number_input(
+                    "Face feather",
+                    min_value=0,
+                    max_value=64,
+                    step=4,
+                    value=int(settings.adetailer.face_feather),
+                    key="ui.adetailer.face_feather",
+                )
             )
 
         # --- Server status ---
         st.divider()
         trt_resolution = resolution if backend == "trt" else ""
         cfg_key = _server_cfg_key(
-            checkpoint,
+            settings.models.checkpoint,
             upscale_model or "",
             face_model or "",
             lora or "",
-            int(lora_rank),
+            int(settings.models.lora_rank),
             precision,
             backend,
             bool(compile_unet),
@@ -595,13 +733,22 @@ def main() -> None:
 
     # --- main area ---
     st.title("SDXL Inference")
-    prompt = st.text_area("Prompt", height=80, key="prompt")
-    st.text_area("Negative prompt", height=60, key="negative")
+    settings.prompt.prompt = st.text_area(
+        "Prompt",
+        height=80,
+        value=settings.prompt.prompt,
+        key="ui.prompt.prompt",
+    )
+    prompt = settings.prompt.prompt
+    settings.prompt.negative = st.text_area(
+        "Negative prompt",
+        height=60,
+        value=settings.prompt.negative,
+        key="ui.prompt.negative",
+    )
     generate = st.button("Generate", type="primary", width="stretch")
 
-    st.session_state["_prev_hires_enabled"] = bool(hires_enabled)
-    _sync_field_values()
-    _save_settings(st.session_state)
+    _save_settings(settings)
 
     if not generate:
         st.stop()
@@ -616,7 +763,7 @@ def main() -> None:
         )
         st.stop()
 
-    seed = int(_field_value("seed"))
+    seed = int(settings.seed.seed)
     if random_seed:
         seed = random.randint(0, 2**32 - 1)
         st.session_state["pending_seed"] = seed
@@ -626,18 +773,18 @@ def main() -> None:
     out_first_path = st.session_state["_out_first_path"]
     if not _server_alive():
         with st.status("Starting server…", expanded=True) as srv_status:
-            st.write(f"Loading: {Path(checkpoint).stem}")
+            st.write(f"Loading: {Path(settings.models.checkpoint).stem}")
             if compile_unet:
                 st.write("torch.compile warm-up — this takes ~30 s once")
             if backend == "trt":
                 st.write(f"TRT engine: {resolution} ({precision})")
             proc = _launch_server(
                 sock_path=sock_path,
-                checkpoint=checkpoint,
+                checkpoint=settings.models.checkpoint,
                 upscale_model=upscale_model,
                 face_model=face_model,
                 lora=lora,
-                lora_rank=int(lora_rank),
+                lora_rank=int(settings.models.lora_rank),
                 precision=precision,
                 backend=backend,
                 compile_unet=bool(compile_unet),
@@ -646,10 +793,16 @@ def main() -> None:
                 onnx_dir=startup.onnx_dir,
             )
             st.session_state["_server_proc"] = proc
-            if not _wait_for_socket(sock_path, timeout=300):
+            if not _wait_for_socket(sock_path, timeout=300, proc=proc):
                 _kill_server()
                 srv_status.update(label="Server failed to start", state="error")
-                st.error("Server did not become ready within 5 minutes.")
+                if proc.poll() is not None:
+                    st.error(
+                        f"Server crashed on startup (exit {proc.poll()}). "
+                        "Check the terminal for the error message."
+                    )
+                else:
+                    st.error("Server did not become ready within 5 minutes.")
                 st.stop()
             st.session_state["_server_cfg"] = cfg_key
             srv_status.update(label="Server ready", state="complete")
@@ -658,7 +811,7 @@ def main() -> None:
     req: dict = {
         "type": "hires" if hires_enabled else "simple",
         "prompt": prompt,
-        "negative": str(_field_value("negative")),
+        "negative": settings.prompt.negative,
         "output": str(out_path),
         "resolution": resolution,
         "sampler": sampler,
@@ -668,22 +821,22 @@ def main() -> None:
         "seed": str(seed),
         "enable_prompt_weighting": True,
         "progress": True,
-        "face_denoise": float(_field_value("face_denoise")),
-        "face_steps": int(_field_value("face_steps")),
-        "face_size": int(_field_value("face_size")),
-        "face_padding": int(_field_value("face_padding")),
-        "face_feather": int(_field_value("face_feather")),
+        "face_denoise": float(settings.adetailer.face_denoise),
+        "face_steps": int(settings.adetailer.face_steps),
+        "face_size": int(settings.adetailer.face_size),
+        "face_padding": int(settings.adetailer.face_padding),
+        "face_feather": int(settings.adetailer.face_feather),
     }
     if hires_enabled:
         req["hires_resolution"] = hires_resolution
         req["save_first"] = str(out_first_path)
-        req["first_steps"] = int(_field_value("first_steps"))
-        req["first_denoise"] = float(_field_value("first_denoise"))
-        req["second_steps"] = int(_field_value("second_steps"))
-        req["second_denoise"] = float(_field_value("second_denoise"))
+        req["first_steps"] = int(settings.hires.first_steps)
+        req["first_denoise"] = float(settings.hires.first_denoise)
+        req["second_steps"] = int(settings.hires.second_steps)
+        req["second_denoise"] = float(settings.hires.second_denoise)
     else:
-        req["steps"] = int(_field_value("steps"))
-        req["denoise"] = float(_field_value("denoise"))
+        req["steps"] = int(settings.simple.steps)
+        req["denoise"] = float(settings.simple.denoise)
 
     # Send request
     with st.status("Generating…", expanded=False) as gen_status:
@@ -740,10 +893,10 @@ def main() -> None:
             if hires_enabled:
                 st.metric(
                     "Passes",
-                    f"{_field_value('first_steps')} + {_field_value('second_steps')} steps",
+                    f"{settings.hires.first_steps} + {settings.hires.second_steps} steps",
                 )
             else:
-                st.metric("Steps", str(_field_value("steps")))
+                st.metric("Steps", str(settings.simple.steps))
         with c2:
             st.metric(
                 "Mode",

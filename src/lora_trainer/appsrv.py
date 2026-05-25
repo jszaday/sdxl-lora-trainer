@@ -96,8 +96,7 @@ def _warmup(pipeline: InferencePipeline) -> None:
 
 
 def _handle(req: dict, *, pipeline: InferencePipeline) -> dict:
-    # Default to "hires" for backward compat with existing CLI clients
-    req_type = req.get("type", "hires")
+    req_type = req.get("type", "simple")
 
     from .trt.backends import TensorRTUnetBackend
 
@@ -355,7 +354,7 @@ def main() -> None:
                     if req is None:
                         continue
                     print(
-                        f"→ [{req.get('type', 'hires')}] {req.get('prompt', '')[:60]!r}",
+                        f"→ [{req.get('type', 'simple')}] {req.get('prompt', '')[:60]!r}",
                         flush=True,
                     )
                     resp = _handle(req, pipeline=pipeline)

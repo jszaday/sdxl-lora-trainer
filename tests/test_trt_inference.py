@@ -162,6 +162,45 @@ def test_partial_denoise_provided_latents_are_noised(monkeypatch):
     assert 0.0 < float(first_sample.mean()) < 1.0
 
 
+def test_partial_denoise_euler_ancestral_uses_scheduler_timesteps(monkeypatch):
+    spec = parse_resolution("1024x1024")
+    captured: dict[str, torch.Tensor] = {}
+
+    class CaptureBackend:
+        def __call__(self, sample, timestep, encoder_hidden_states, *, added_cond_kwargs):
+            if "first_timestep" not in captured:
+                captured["first_timestep"] = timestep.detach().clone()
+            return torch.zeros_like(sample)
+
+    def fake_randn(*args, **kwargs):
+        return torch.ones(*args, device=kwargs["device"], dtype=kwargs["dtype"])
+
+    monkeypatch.setattr("lora_trainer.trt.inference.torch.randn", fake_randn)
+
+    prompt_embeds = torch.zeros(1, 77, 2048)
+    pooled_embeds = torch.zeros(1, 1280)
+    sample_frozen_sdxl(
+        CaptureBackend(),
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=prompt_embeds,
+        pooled_prompt_embeds=pooled_embeds,
+        pooled_negative_prompt_embeds=pooled_embeds,
+        resolution=spec,
+        sampler="euler_ancestral",
+        scheduler_name="normal",
+        num_inference_steps=5,
+        guidance_scale=1.0,
+        device="cpu",
+        dtype=torch.float32,
+        latents=torch.zeros(1, 4, 128, 128),
+        seed=123,
+        denoise=0.7,
+        progress=False,
+    )
+
+    assert captured["first_timestep"].numel() == 2
+
+
 def test_full_denoise_provided_latents_are_noised(monkeypatch):
     spec = parse_resolution("1024x1024")
     captured: dict[str, torch.Tensor] = {}

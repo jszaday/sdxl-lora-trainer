@@ -47,6 +47,15 @@ def test_normal_scheduler_uses_comfy_log_sigma_interpolation():
     assert comfy_sigmas(scheduler, 5) == pytest.approx(expected)
 
 
+def test_comfy_sigmas_accepts_cached_tensor_sigma_table():
+    scheduler = build_noise_scheduler("normal", num_inference_steps=5)
+
+    sigmas = comfy_sigmas(scheduler, 5)
+
+    assert sigmas is not None
+    assert sigmas[-1] == 0.0
+
+
 def test_comfy_timesteps_use_nearest_log_sigma_index():
     scheduler = build_noise_scheduler("normal", num_inference_steps=5)
     set_scheduler_timesteps(scheduler, 5, device="cpu")

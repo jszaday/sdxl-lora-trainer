@@ -1,14 +1,15 @@
 """TensorRT-accelerated tiled image upscaling via spandrel models."""
+
 from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import torch.nn.functional as F  # noqa: N812
 
 
 def _load_spandrel(model_path: Path) -> tuple[nn.Module, int]:
@@ -141,7 +142,9 @@ class TRTUpscalerTile:
     def __call__(self, tile: torch.Tensor) -> torch.Tensor:
         """Upscale a single [1, 3, H, W] tile. Input must be fp16 CUDA."""
         b, c, h, w = tile.shape
-        out = torch.empty(b, c, h * self.scale, w * self.scale, dtype=tile.dtype, device=tile.device)
+        out = torch.empty(
+            b, c, h * self.scale, w * self.scale, dtype=tile.dtype, device=tile.device
+        )
         t = tile.contiguous()
         self.context.set_tensor_address("image", t.data_ptr())
         self.context.set_tensor_address("upscaled", out.data_ptr())
@@ -171,7 +174,7 @@ def tiled_upscale(
     _, c, h, w = image.shape
     out_h, out_w = h * scale, w * scale
     output = torch.zeros(1, c, out_h, out_w, dtype=image.dtype, device=image.device)
-    counts = torch.zeros(1, 1, out_h, out_w, dtype=image.dtype, device=image.device)
+    counts = torch.zeros(1, 1, out_h, out_w, dtype=torch.float32, device=image.device)
 
     step = tile_size - overlap
 
@@ -248,7 +251,7 @@ def benchmark_upscaler(
 ) -> dict[str, float]:
     """Benchmark PyTorch fp32 vs torch.compile fp16 vs TRT fp16 for a tiled upscale pass.
 
-    Returns dict with keys: 'torch_fp32_s', 'compiled_fp16_s', 'trt_fp16_s' (if built).
+    Returns dict with keys: 'torch_fp32_s', 'compiled_fp32_s', 'trt_fp16_s' (if built).
     """
     model_path = Path(model_path)
 
@@ -261,7 +264,7 @@ def benchmark_upscaler(
 
     def torch_tile_fn(tile: torch.Tensor) -> torch.Tensor:
         with torch.inference_mode():
-            return torch_model(tile.float())
+            return torch_model(tile.float())  # noqa: F821
 
     print(f"Warming up PyTorch fp32 ({warmup} passes) …")
     for _ in range(warmup):
@@ -298,12 +301,18 @@ def benchmark_upscaler(
         engine_path = engine_dir / f"{stem}_tile{tile_size}_{precision}.plan"
 
         if force or not engine_path.exists():
-            print(f"\nExporting ONNX …")
-            export_upscaler_onnx(model_path, onnx_path, tile_size=tile_size, device=device, opset=opset)
+            print("\nExporting ONNX …")
+            export_upscaler_onnx(
+                model_path, onnx_path, tile_size=tile_size, device=device, opset=opset
+            )
             print("Building TRT engine (takes a few minutes) …")
             build_upscaler_engine(
-                onnx_path, engine_path, tile_size=tile_size, scale=scale,
-                precision=precision, workspace_gb=workspace_gb,
+                onnx_path,
+                engine_path,
+                tile_size=tile_size,
+                scale=scale,
+                precision=precision,
+                workspace_gb=workspace_gb,
             )
             print(f"Engine: {engine_path}")
         else:
@@ -315,13 +324,17 @@ def benchmark_upscaler(
 
             print(f"Warming up TRT fp16 ({warmup} passes) …")
             for _ in range(warmup):
-                tiled_upscale(image_fp16, backend, tile_size=tile_size, overlap=overlap, scale=scale)
+                tiled_upscale(
+                    image_fp16, backend, tile_size=tile_size, overlap=overlap, scale=scale
+                )  # noqa: E501
             torch.cuda.synchronize()
 
             print(f"Timing TRT fp16 ({runs} runs) …")
             t0 = time.perf_counter()
             for _ in range(runs):
-                tiled_upscale(image_fp16, backend, tile_size=tile_size, overlap=overlap, scale=scale)
+                tiled_upscale(
+                    image_fp16, backend, tile_size=tile_size, overlap=overlap, scale=scale
+                )  # noqa: E501
                 torch.cuda.synchronize()
             results["trt_fp16_s"] = (time.perf_counter() - t0) / runs
         except Exception as exc:

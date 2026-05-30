@@ -495,15 +495,22 @@ def decode_latents(vae: AutoencoderKL, latents: torch.Tensor) -> torch.Tensor:
     Returns:
         Image tensors in [0, 1] range
     """
+    if not torch.isfinite(latents).all():
+        raise FloatingPointError("Cannot decode latents: sampler produced non-finite values")
+
+    device = next(vae.parameters()).device
+
     # Unscale latents
-    latents = latents / vae.config.scaling_factor
+    latents = latents.to(device=device, dtype=vae.dtype) / vae.config.scaling_factor
 
     # Decode
     with torch.no_grad():
-        images = vae.decode(latents.to(vae.dtype)).sample
+        images = vae.decode(latents).sample
 
     # Convert from [-1, 1] to [0, 1]
     images = (images / 2 + 0.5).clamp(0, 1)
+    if not torch.isfinite(images).all():
+        raise FloatingPointError("VAE decode produced non-finite image values")
 
     return images
 

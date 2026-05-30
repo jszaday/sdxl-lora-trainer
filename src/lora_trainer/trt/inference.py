@@ -16,6 +16,18 @@ from .backends import UnetBackend
 from .config import ResolutionSpec, validate_latents_shape
 
 
+def _raise_if_nonfinite(name: str, tensor: torch.Tensor) -> None:
+    if torch.isfinite(tensor).all():
+        return
+    finite = tensor[torch.isfinite(tensor)]
+    if finite.numel() == 0:
+        raise FloatingPointError(f"{name} contains no finite values")
+    raise FloatingPointError(
+        f"{name} contains non-finite values "
+        f"(finite min={float(finite.min()):.4g}, max={float(finite.max()):.4g})"
+    )
+
+
 def make_initial_latents(
     resolution: ResolutionSpec,
     *,
@@ -124,6 +136,7 @@ def _predict_denoised_cfg(
     sigma = sigma.to(device=device, dtype=dtype)
     latent_model_input = torch.cat([latents, latents], dim=0)
     latent_model_input = latent_model_input / torch.sqrt(1.0 + sigma**2)
+    _raise_if_nonfinite("UNet latent input", latent_model_input)
     timestep_input = timestep.to(device=device, dtype=torch.float32).expand(
         latent_model_input.shape[0]
     )
@@ -134,6 +147,7 @@ def _predict_denoised_cfg(
         prompt_embeds_input,
         added_cond_kwargs=added_cond_kwargs,
     )
+    _raise_if_nonfinite("UNet noise prediction", noise_pred)
     noise_uncond, noise_text = noise_pred.chunk(2)
     denoised_uncond = latents - noise_uncond * sigma
     denoised_text = latents - noise_text * sigma
@@ -174,6 +188,7 @@ def _sample_euler_ksampler(
         )
         derivative = (latents - denoised) / sigma
         latents = latents + derivative * (next_sigma - sigma)
+        _raise_if_nonfinite("Euler latents", latents)
         if on_step is not None:
             on_step(i + 1, len(sigmas) - 1)
 
@@ -274,6 +289,8 @@ def sample_frozen_sdxl(
         dtype=dtype,
     ).repeat(batch_size * 2, 1)
     added_cond_kwargs = {"text_embeds": text_embeds, "time_ids": time_ids}
+    _raise_if_nonfinite("Prompt embeddings", prompt_embeds_input)
+    _raise_if_nonfinite("Pooled prompt embeddings", text_embeds)
 
     if sampler == "euler":
         if sigmas is None:
@@ -291,6 +308,7 @@ def sample_frozen_sdxl(
             seed=seed,
             denoise=denoise,
         )
+        _raise_if_nonfinite("Initial latents", latents)
         return _sample_euler_ksampler(
             unet_backend,
             latents=latents,
@@ -321,6 +339,7 @@ def sample_frozen_sdxl(
                 latents = latents * scheduler.init_noise_sigma
         else:
             latents = latents * scheduler.init_noise_sigma
+        _raise_if_nonfinite("Initial latents", latents)
     else:
         latents = latents.to(device=device, dtype=dtype)
         validate_latents_shape(latents, resolution, batch_size=batch_size)
@@ -333,6 +352,7 @@ def sample_frozen_sdxl(
                 latents = scheduler.add_noise(latents, noise, timesteps[:1].to(device=device)).to(
                     dtype=dtype
                 )
+        _raise_if_nonfinite("Initial latents", latents)
 
     iterator = tqdm(timesteps, desc="Sampling", leave=False) if progress else timesteps
     if device == "cuda":
@@ -345,6 +365,7 @@ def sample_frozen_sdxl(
         for i, timestep in enumerate(iterator):
             latent_model_input = torch.cat([latents, latents], dim=0)
             latent_model_input = scheduler.scale_model_input(latent_model_input, timestep)
+            _raise_if_nonfinite("UNet latent input", latent_model_input)
             timestep_input = timestep.to(device=device, dtype=torch.float32).expand(
                 latent_model_input.shape[0]
             )
@@ -355,9 +376,11 @@ def sample_frozen_sdxl(
                 prompt_embeds_input,
                 added_cond_kwargs=added_cond_kwargs,
             )
+            _raise_if_nonfinite("UNet noise prediction", noise_pred)
             noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
             latents = scheduler.step(noise_pred, timestep, latents).prev_sample
+            _raise_if_nonfinite("Sampler latents", latents)
             if on_step is not None:
                 on_step(i + 1, len(timesteps))
     finally:

@@ -148,6 +148,8 @@ def save_images(images: torch.Tensor, path: Path) -> None:
     suffix = path.suffix or ".png"
     for i, img in enumerate(images):
         p = path if images.shape[0] == 1 else path.with_name(f"{path.stem}_{i}{suffix}")
+        if not torch.isfinite(img).all():
+            raise FloatingPointError(f"Cannot save image {i}: tensor contains non-finite values")
         arr = img.to(torch.float32).cpu().permute(1, 2, 0).numpy()
         arr = (arr * 255).round().clip(0, 255).astype("uint8")
         Image.fromarray(arr).save(p)

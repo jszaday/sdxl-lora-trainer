@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal
 
 import streamlit as st
+import torch
 from PIL import Image
 
 from lora_trainer.pipeline import SAMPLERS, SCHEDULERS
@@ -29,6 +30,11 @@ _LEN_FMT = ">I"
 _SETTINGS_PATH = Path.home() / ".config" / "lora-trainer" / "app_settings.json"
 
 _managed_procs: list[subprocess.Popen] = []
+
+
+def _mps_available() -> bool:
+    mps = getattr(torch.backends, "mps", None)
+    return mps is not None and mps.is_available()
 
 
 @atexit.register
@@ -322,6 +328,7 @@ def _server_cfg_key(
     backend: str,
     compile_unet: bool,
     trt_resolution: str,
+    device: str | None,
 ) -> tuple:
     return (
         checkpoint,
@@ -333,6 +340,7 @@ def _server_cfg_key(
         backend,
         compile_unet,
         trt_resolution,
+        device or "",
     )
 
 
@@ -377,6 +385,7 @@ def _launch_server(
     trt_resolution: str,
     engine_dir: Path,
     onnx_dir: Path,
+    device: str | None = None,
     upscale_tile_size: int = 512,
     upscale_overlap: int = 32,
 ) -> subprocess.Popen:
@@ -401,6 +410,8 @@ def _launch_server(
         "--upscale_overlap",
         str(upscale_overlap),
     ]
+    if device:
+        cmd += ["--device", device]
     if upscale_model:
         cmd += ["--upscale_model", upscale_model]
     if face_model:
@@ -445,6 +456,7 @@ def _parse_startup_args() -> argparse.Namespace:
     p.add_argument("--lora_dir", type=Path, default=None)
     p.add_argument("--engine_dir", type=Path, default=Path("engines"))
     p.add_argument("--onnx_dir", type=Path, default=Path("engines/onnx"))
+    p.add_argument("--device", default=None)
     args, _ = p.parse_known_args(sys.argv[1:])
     return args
 
@@ -479,6 +491,15 @@ def main() -> None:
         st.session_state["_out_first_path"] = Path(f"/tmp/lora_app_{sid}_first.png")
 
     settings = _settings()
+    cuda_available = torch.cuda.is_available()
+    mps_available = _mps_available()
+    backend_options = ["torch", "trt"] if cuda_available else ["torch"]
+    if cuda_available:
+        precision_options = ["fp16", "bf16", "fp32"]
+    elif mps_available:
+        precision_options = ["fp16", "fp32"]
+    else:
+        precision_options = ["fp32"]
     if "pending_seed" in st.session_state:
         settings.seed.seed = int(st.session_state.pop("pending_seed"))
 
@@ -490,9 +511,9 @@ def main() -> None:
     settings.sampling.sampler = _valid_choice(settings.sampling.sampler, SAMPLERS, "euler")
     settings.sampling.scheduler = _valid_choice(settings.sampling.scheduler, SCHEDULERS, "normal")
     settings.backend.precision = _valid_choice(
-        settings.backend.precision, ["fp16", "bf16", "fp32"], "fp16"
+        settings.backend.precision, precision_options, precision_options[0]
     )
-    settings.backend.backend = _valid_choice(settings.backend.backend, ["torch", "trt"], "torch")
+    settings.backend.backend = _valid_choice(settings.backend.backend, backend_options, "torch")
     settings.models.checkpoint = _valid_choice(
         settings.models.checkpoint, checkpoint_paths, checkpoint_paths[0]
     )
@@ -728,11 +749,15 @@ def main() -> None:
         # TRT doesn't support hires (resolution-specific engines, two passes)
         settings.backend.backend = st.radio(
             "Backend",
-            ["torch", "trt"],
-            index=_choice_index(["torch", "trt"], settings.backend.backend),
+            backend_options,
+            index=_choice_index(backend_options, settings.backend.backend),
             key="ui.backend.backend",
-            disabled=hires_enabled,
-            help="TRT is disabled in hires mode (engines are resolution-specific).",
+            disabled=hires_enabled or len(backend_options) == 1,
+            help=(
+                "TRT requires CUDA and is disabled on this device."
+                if not cuda_available
+                else "TRT is disabled in hires mode (engines are resolution-specific)."
+            ),
         )
         if hires_enabled:
             settings.backend.backend = "torch"
@@ -740,9 +765,11 @@ def main() -> None:
 
         settings.backend.precision = st.radio(
             "Precision",
-            ["fp16", "bf16", "fp32"],
-            index=_choice_index(["fp16", "bf16", "fp32"], settings.backend.precision),
+            precision_options,
+            index=_choice_index(precision_options, settings.backend.precision),
             key="ui.backend.precision",
+            disabled=len(precision_options) == 1,
+            help=("CPU inference uses fp32." if not cuda_available and not mps_available else None),
         )
         precision = settings.backend.precision
         settings.backend.compile_unet = st.checkbox(
@@ -820,6 +847,7 @@ def main() -> None:
             backend,
             bool(compile_unet),
             trt_resolution,
+            startup.device,
         )
         server_cfg_changed = st.session_state.get("_server_cfg") != cfg_key
         if server_cfg_changed and _server_alive():
@@ -895,6 +923,7 @@ def main() -> None:
                 trt_resolution=resolution,
                 engine_dir=startup.engine_dir,
                 onnx_dir=startup.onnx_dir,
+                device=startup.device,
             )
             st.session_state["_server_proc"] = proc
             if not _wait_for_socket(sock_path, timeout=300, proc=proc):

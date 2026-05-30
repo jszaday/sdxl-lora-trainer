@@ -27,6 +27,20 @@ _HEARTBEAT_INTERVAL = 5.0  # seconds between server pings
 _HEARTBEAT_TIMEOUT = 15.0  # seconds to wait for client pong before shutdown
 
 
+def _default_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def _dtype_for_device(precision: str, device: str) -> torch.dtype:
+    _ = device
+    return dtype_from_precision(precision)
+
+
 def _send_msg(conn: socket.socket, obj: dict) -> None:
     data = json.dumps(obj).encode()
     conn.sendall(struct.pack(_LEN_FMT, len(data)) + data)
@@ -283,8 +297,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = dtype_from_precision(args.precision)
+    device = args.device or _default_device()
+    if args.backend == "trt" and not device.startswith("cuda"):
+        raise ValueError("TensorRT backend requires a CUDA device; use --backend torch.")
+    dtype = _dtype_for_device(args.precision, device)
 
     print(f"Device: {device} ({args.precision})")
     print(f"Loading SDXL: {args.checkpoint}")

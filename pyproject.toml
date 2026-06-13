@@ -27,6 +27,7 @@ dev = [
     "pytest-cov>=4.1.0",
     "ruff>=0.4.0",
     "pre-commit>=3.5.0",
+    "streamlit>=1.35.0",
 ]
 optim = [
     "prodigyopt",
@@ -40,12 +41,15 @@ trt = [
     "tensorrt>=10.13.0",
     "onnx>=1.15.0",
     "onnxruntime-gpu>=1.17.0",
+    "spandrel>=0.3.0",
 ]
 
 [project.scripts]
 lora-train = "lora_trainer.cli:main"
 lora-convert = "lora_converter.cli:main"
 lora-build-trt = "lora_trainer.build_trt_cli:main"
+lora-build-upscaler-trt = "lora_trainer.build_upscaler_trt_cli:main"
+lora-app-serve = "lora_trainer.appsrv:main"
 lora-sample = "lora_trainer.sampler_cli:main"
 lora-app = "lora_trainer.app:run"
 

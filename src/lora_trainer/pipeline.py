@@ -67,6 +67,7 @@ def load_inference_models(
         rank = detected if detected is not None else lora_rank
     vae = load_vae(checkpoint, device=device, dtype=dtype)
     vae.to(torch.float32)
+    print(f"VAE scaling_factor={vae.config.scaling_factor} (SDXL expected: 0.13025)")
     te1, te2, tok1, tok2, _ = load_text_encoders(
         checkpoint,
         device=device,
